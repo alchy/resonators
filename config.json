@@ -1,0 +1,67 @@
+{
+  "source_dir": "C:/SoundBanks/ddsp/salamander",
+  "data_dir":   "data/prepared",
+  "checkpoint_dir": "checkpoints",
+  "sample_rate": 48000,
+  "frame_size":  256,
+
+  "resonators": {
+    "n_harmonic":  48,
+    "n_noise":      8,
+    "n_transient":  8,
+    "inharmonicity_init":   0.0001,
+    "decay_harmonic_init":  0.5,
+    "decay_noise_init":     3.0,
+    "decay_transient_init": 40.0,
+    "noise_phase_scale":    0.4
+  },
+
+  "controller": {
+    "f0_bins":     64,
+    "vel_bins":    16,
+    "pre_mlp_dim": 128,
+    "gru_hidden":  256,
+    "gru_layers":    2,
+    "post_mlp_dim": 128
+  },
+
+  "envelope": {
+    "smooth_frames":       5,
+    "release_rms_thresh":  0.005,
+    "sustain_deriv_thresh": 0.008
+  },
+
+  "density": {
+    "n_active_sustain": 12,
+    "n_active_decay":    6
+  },
+
+  "loss": {
+    "w_l1":       0.5,
+    "w_kin":      0.4,
+    "w_mrstft":   1.0,
+    "w_eng":      0.4,
+    "w_sparsity": 0.03,
+    "attack_weight": 5.0,
+    "mrstft_ffts": [256, 1024, 4096]
+  },
+
+  "training": {
+    "batch_size":      8,
+    "learning_rate":   3e-4,
+    "epochs":        200,
+    "steps_per_epoch": 200,
+    "val_split":       0.1,
+    "grad_clip":       1.0,
+    "warmup_steps":   300,
+    "ema_decay":       0.999,
+    "clip_frames":    375
+  },
+
+  "curriculum": {
+    "phase2_start": 50,
+    "phase3_start": 100
+  },
+
+  "device": "auto"
+}
