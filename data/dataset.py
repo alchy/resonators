@@ -65,7 +65,7 @@ class EGRBDataset(Dataset):
         d        = self._load(file_idx)
 
         n_frames    = d['rms'].shape[0]
-        clip_frames = min(self.clip_frames, n_frames)
+        clip_frames = self.clip_frames
 
         # Prefer attack-anchored clips
         attack_frames = np.where(d['phases'] == self.PHASE_ATTACK)[0]
