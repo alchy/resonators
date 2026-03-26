@@ -3,8 +3,15 @@ data/dataset.py
 PyTorch Dataset for EGRB training.
 
 Each sample is a clip of clip_frames consecutive frames drawn from one NPZ file.
-The sampler prefers clips that start near the attack transient (70% of draws),
-so the model sees plenty of the hardest part of the envelope.
+clip_frames is set by the training curriculum and changes across phases:
+  Phase 1:  32 frames  (~170 ms) — attack-only, fast BPTT convergence
+  Phase 2: 128 frames  (~680 ms) — attack + early decay
+  Phase 3: 375 frames  (  ~2 s)  — full note including release
+
+The sampler prefers clips that start near the attack transient (70 % of draws)
+so the model sees the hardest part of the envelope disproportionately often.
+
+clip_frames can be updated at runtime:  dataset.clip_frames = new_value
 """
 
 import os

@@ -1,5 +1,5 @@
 {
-  "source_dir": "C:/SoundBanks/ddsp/salamander",
+  "source_dir": "C:/SoundBanks/IthacaPlayer/ks-grand",
   "data_dir":   "data/prepared",
   "checkpoint_dir": "checkpoints",
   "sample_rate": 48000,
@@ -16,6 +16,18 @@
     "noise_phase_scale":    0.4
   },
 
+  "resonator_curriculum": {
+    "p1_n_harmonic":   8,
+    "p2_n_harmonic":  24,
+    "p3_n_harmonic":  48,
+    "p1_n_noise":      0,
+    "p2_n_noise":      4,
+    "p3_n_noise":      8,
+    "p1_n_transient":  0,
+    "p2_n_transient":  0,
+    "p3_n_transient":  8
+  },
+
   "controller": {
     "f0_bins":     64,
     "vel_bins":    16,
@@ -23,6 +35,16 @@
     "gru_hidden":  256,
     "gru_layers":    2,
     "post_mlp_dim": 128
+  },
+
+  "envelope_net": {
+    "n_env":         256,
+    "warp":          4.0,
+    "hidden":         64,
+    "epochs":        500,
+    "lr":           1e-3,
+    "attack_weight": 5.0,
+    "env_mix":       0.5
   },
 
   "envelope": {
@@ -55,12 +77,15 @@
     "grad_clip":       1.0,
     "warmup_steps":   300,
     "ema_decay":       0.999,
-    "clip_frames":    375
+    "clip_frames":    375,
+    "clip_frames_p1":  32,
+    "clip_frames_p2": 128,
+    "clip_frames_p3": 375
   },
 
   "curriculum": {
-    "phase2_start": 50,
-    "phase3_start": 100
+    "phase2_start": 20,
+    "phase3_start": 60
   },
 
   "device": "auto"

@@ -10,16 +10,25 @@ n_h+n_n … N-1      Transient   very high decay, only updated during attack pha
 
 Per-frame evolution
 ───────────────────
-1.  GRU controller outputs (Δf_rel, ΔA, raw_gate) for every resonator.
+1.  GRU controller outputs (Δf_rel, target_amp, raw_gate) for every resonator.
 2.  Envelope-phase hard mask limits which resonators may be updated:
-      attack  → all N
+      attack  → all curriculum-active resonators
       sustain → harmonics 0..n_active_sustain-1
       decay   → harmonics 0..n_active_decay-1
       release → none
-3.  Effective gate = sigmoid(raw_gate) × phase_mask   (differentiable)
-4.  Frequency and amplitude updated where gate > 0.
-5.  All amplitudes decay: A(t+1) = A(t) · exp(–decay_i · dt)
+3.  Effective gate = sigmoid(raw_gate) × phase_mask × curriculum_mask
+4.  Harmonic frequencies are re-anchored to ideal positions each frame
+    (prevents frequency drift).  delta_f adds a tiny ±0.5 % inharmonicity
+    correction.
+5.  Amplitudes: gate blends between natural decay and predicted target_amp.
+      amps_new = amps_decayed·(1–gate) + target_amp·gate
 6.  256 audio samples synthesised by summing cosines.
+
+Resonator curriculum
+────────────────────
+Call  bank.set_active_resonators(n_h, n_n, n_t)  at each curriculum phase
+transition.  Only active resonators receive controller updates and contribute
+to the audio output.  Inactive resonators have their amplitudes zeroed.
 """
 
 import math
@@ -35,27 +44,31 @@ class ResonatorBank(nn.Module):
         rc = cfg['resonators']
         dc = cfg.get('density', {})
 
-        self.n_harmonic  = int(rc['n_harmonic'])   # 48
-        self.n_noise     = int(rc['n_noise'])       #  8
-        self.n_transient = int(rc['n_transient'])   #  8
+        self.n_harmonic  = int(rc['n_harmonic'])   # max harmonics
+        self.n_noise     = int(rc['n_noise'])       # max noise resonators
+        self.n_transient = int(rc['n_transient'])   # max transient resonators
         self.N           = self.n_harmonic + self.n_noise + self.n_transient
 
-        self.sr         = int(cfg['sample_rate'])   # 48 000
-        self.frame_size = int(cfg['frame_size'])    #    256
-        self.dt         = self.frame_size / self.sr # seconds per frame
+        self.sr         = int(cfg['sample_rate'])
+        self.frame_size = int(cfg['frame_size'])
+        self.dt         = self.frame_size / self.sr  # seconds per frame
 
         self.n_active_sustain = int(dc.get('n_active_sustain', 12))
         self.n_active_decay   = int(dc.get('n_active_decay',    6))
 
+        # ── Curriculum state (non-parameter, updated by train.py) ─────
+        rc_cfg = cfg.get('resonator_curriculum', {})
+        self._n_active_h = int(rc_cfg.get('p1_n_harmonic',  min(8,  self.n_harmonic)))
+        self._n_active_n = int(rc_cfg.get('p1_n_noise',     0))
+        self._n_active_t = int(rc_cfg.get('p1_n_transient', 0))
+
         # ── Learnable parameters ──────────────────────────────────────
 
-        # Inharmonicity scalar (log-space, always positive)
         inh_init = float(rc.get('inharmonicity_init', 1e-4))
         self.log_inharmonicity = nn.Parameter(
             torch.tensor(math.log(max(inh_init, 1e-8)))
         )
 
-        # Per-resonator log-decay (always positive after exp)
         d_h = float(rc.get('decay_harmonic_init',   0.5))
         d_n = float(rc.get('decay_noise_init',       3.0))
         d_t = float(rc.get('decay_transient_init', 40.0))
@@ -66,29 +79,44 @@ class ResonatorBank(nn.Module):
         ])
         self.log_decay = nn.Parameter(decay_init)  # (N,)
 
-        # Stereo pan per resonator: L = cos(pan), R = sin(pan), pan ∈ [0, π/2]
+        # Per-resonator log amplitude scale — learned overall level per resonator
+        self.log_amp_scale = nn.Parameter(
+            torch.cat([
+                torch.log(0.08 / torch.arange(1, self.n_harmonic + 1).float()),
+                torch.full((self.n_noise,),     math.log(0.005)),
+                torch.full((self.n_transient,), math.log(0.03)),
+            ])
+        )  # (N,)
+
+        # Stereo pan
         pan_init = torch.full((self.N,), math.pi / 4)
-        # Gently spread harmonics across the stereo field
-        spread = torch.linspace(-0.25, 0.25, self.n_harmonic)
+        spread   = torch.linspace(-0.25, 0.25, self.n_harmonic)
         pan_init[: self.n_harmonic] = math.pi / 4 + spread
-        self.pan_params = nn.Parameter(pan_init)  # (N,)
+        self.pan_params = nn.Parameter(pan_init)
 
         # ── Fixed buffers ─────────────────────────────────────────────
 
-        # Harmonic indices [1, 2, …, n_harmonic]
         self.register_buffer('harm_idx',
             torch.arange(1, self.n_harmonic + 1, dtype=torch.float32))
 
-        # Noise resonator centre frequencies (log-spaced 200 Hz … 10 kHz)
         noise_f = torch.exp(
             torch.linspace(math.log(200.0), math.log(10000.0), self.n_noise)
-        )
+        ) if self.n_noise > 0 else torch.zeros(0)
         self.register_buffer('noise_freqs', noise_f)
 
         self.noise_phase_scale = float(rc.get('noise_phase_scale', 0.4))
 
-        TWO_PI = torch.tensor(2.0 * math.pi)
-        self.register_buffer('TWO_PI', TWO_PI)
+        self.register_buffer('TWO_PI', torch.tensor(2.0 * math.pi))
+
+    # ──────────────────────────────────────────────────────────────────
+    # Curriculum API
+    # ──────────────────────────────────────────────────────────────────
+
+    def set_active_resonators(self, n_h: int, n_n: int, n_t: int):
+        """Update how many resonators of each type are active."""
+        self._n_active_h = min(int(n_h), self.n_harmonic)
+        self._n_active_n = min(int(n_n), self.n_noise)
+        self._n_active_t = min(int(n_t), self.n_transient)
 
     # ──────────────────────────────────────────────────────────────────
     # Properties
@@ -100,7 +128,17 @@ class ResonatorBank(nn.Module):
 
     @property
     def decay(self) -> torch.Tensor:
-        return self.log_decay.exp()  # (N,) all > 0
+        return self.log_decay.exp()
+
+    @property
+    def amp_scale(self) -> torch.Tensor:
+        return self.log_amp_scale.exp()
+
+    def _ideal_harmonic_freqs(self, f0: torch.Tensor) -> torch.Tensor:
+        """Returns (B, n_harmonic) ideal harmonic frequencies."""
+        inh = self.inharmonicity
+        hi  = self.harm_idx                                       # (n_h,)
+        return f0.unsqueeze(1) * hi * torch.sqrt(1.0 + inh * hi.pow(2))
 
     # ──────────────────────────────────────────────────────────────────
     # State initialisation
@@ -111,123 +149,125 @@ class ResonatorBank(nn.Module):
         f0:       torch.Tensor,   # (B,)
         vel_norm: torch.Tensor,   # (B,)
     ):
-        """
-        Returns (freqs, amps, phases), each (B, N).
-        """
+        """Returns (freqs, amps, phases), each (B, N)."""
         B      = f0.shape[0]
         device = f0.device
-        inh    = self.inharmonicity
 
-        # Harmonic frequencies with inharmonicity stretch
-        hi = self.harm_idx  # (n_h,)
-        harm_freqs = (
-            f0.unsqueeze(1) * hi
-            * torch.sqrt(1.0 + inh * hi.pow(2))
-        )  # (B, n_h)
+        harm_freqs = self._ideal_harmonic_freqs(f0)              # (B, n_h)
 
-        # Noise frequencies — fixed, same for all batch elements
-        noise_freqs = self.noise_freqs.unsqueeze(0).expand(B, -1)  # (B, n_n)
+        noise_freqs = (self.noise_freqs.unsqueeze(0).expand(B, -1)
+                       if self.n_noise > 0
+                       else torch.zeros(B, 0, device=device))
 
-        # Transient frequencies: log-spaced from f0*2 to f0*8
-        ti = torch.exp(
-            torch.linspace(math.log(2.0), math.log(8.0),
-                           self.n_transient, device=device)
-        )
-        trans_freqs = f0.unsqueeze(1) * ti.unsqueeze(0)  # (B, n_t)
+        if self.n_transient > 0:
+            ti = torch.exp(torch.linspace(
+                math.log(2.0), math.log(8.0),
+                self.n_transient, device=device))
+            trans_freqs = f0.unsqueeze(1) * ti.unsqueeze(0)
+        else:
+            trans_freqs = torch.zeros(B, 0, device=device)
 
-        freqs = torch.cat([harm_freqs, noise_freqs, trans_freqs], dim=1)  # (B, N)
+        freqs = torch.cat([harm_freqs, noise_freqs, trans_freqs], dim=1)
 
-        # Initial amplitudes: 1/i spectral roll-off scaled by velocity
-        harm_amps  = vel_norm.unsqueeze(1) * (0.08 / hi.unsqueeze(0))
-        noise_amps = vel_norm.unsqueeze(1) * torch.full((1, self.n_noise),  0.005, device=device)
-        trans_amps = vel_norm.unsqueeze(1) * torch.full((1, self.n_transient), 0.03, device=device)
-        amps = torch.cat([harm_amps, noise_amps, trans_amps], dim=1)  # (B, N)
+        # Amplitudes scaled by vel_norm and learnable amp_scale
+        amps = vel_norm.unsqueeze(1) * self.amp_scale.unsqueeze(0).to(device)
 
-        # Random initial phases
+        # Zero out inactive resonators so they don't leak into the output
+        n_h, n_n = self.n_harmonic, self.n_noise
+        amps = amps.clone()
+        amps[:, self._n_active_h : n_h]               = 0.0
+        amps[:, n_h + self._n_active_n : n_h + n_n]   = 0.0
+        amps[:, n_h + n_n + self._n_active_t :]        = 0.0
+
         phases = torch.rand(B, self.N, device=device) * self.TWO_PI
 
         return freqs, amps, phases
 
     # ──────────────────────────────────────────────────────────────────
-    # Per-frame evolution
+    # Phase + curriculum mask
     # ──────────────────────────────────────────────────────────────────
 
     def _phase_mask(
         self,
         phase_label: torch.Tensor,  # (B,) int
     ) -> torch.Tensor:
-        """
-        Returns float mask (B, N) ∈ {0, 1}.
-        Differentiable in the sense that gradient passes through
-        the product eff_gate = sigmoid_gate * phase_mask.
-        """
+        """Returns float mask (B, N) ∈ {0, 1}."""
         B      = phase_label.shape[0]
         N      = self.N
         device = phase_label.device
+        n_h, n_n = self.n_harmonic, self.n_noise
 
-        # Start with all ones
-        mask = torch.ones(B, N, device=device)
-
-        # Resonator index vector for comparisons
+        mask    = torch.ones(B, N, device=device)
         res_idx = torch.arange(N, device=device).unsqueeze(0)  # (1, N)
 
-        is_sustain = (phase_label == 1).float().unsqueeze(1)  # (B, 1)
+        is_sustain = (phase_label == 1).float().unsqueeze(1)
         is_decay   = (phase_label == 2).float().unsqueeze(1)
         is_release = (phase_label == 3).float().unsqueeze(1)
         is_attack  = (phase_label == 0).float().unsqueeze(1)
 
-        n_sus = self.n_active_sustain
-        n_dcy = self.n_active_decay
-        n_h   = self.n_harmonic
-        n_n   = self.n_noise
-
-        # Block resonators >= n_active_* during sustain / decay / release
-        block_sus = is_sustain * (res_idx >= n_sus).float()
-        block_dcy = is_decay   * (res_idx >= n_dcy).float()
-        block_rel = is_release * torch.ones(1, N, device=device)
-
-        # Transients only during attack
+        # Phase-based density limits
+        block_sus   = is_sustain * (res_idx >= self.n_active_sustain).float()
+        block_dcy   = is_decay   * (res_idx >= self.n_active_decay).float()
+        block_rel   = is_release * torch.ones(1, N, device=device)
         block_trans = (1.0 - is_attack) * (res_idx >= n_h + n_n).float()
 
-        mask = (mask - block_sus - block_dcy - block_rel - block_trans).clamp(0.0, 1.0)
+        # Curriculum: block resonators beyond current active counts
+        block_curr_h = (res_idx >= self._n_active_h).float() * (res_idx < n_h).float()
+        block_curr_n = ((res_idx >= n_h + self._n_active_n).float()
+                        * (res_idx < n_h + n_n).float())
+        block_curr_t = (res_idx >= n_h + n_n + self._n_active_t).float()
+
+        mask = (mask
+                - block_sus - block_dcy - block_rel - block_trans
+                - block_curr_h - block_curr_n - block_curr_t
+                ).clamp(0.0, 1.0)
         return mask
+
+    # ──────────────────────────────────────────────────────────────────
+    # Per-frame evolution
+    # ──────────────────────────────────────────────────────────────────
 
     def evolve(
         self,
-        freqs:       torch.Tensor,  # (B, N)
-        amps:        torch.Tensor,  # (B, N)
-        phases:      torch.Tensor,  # (B, N)
-        delta_f:     torch.Tensor,  # (B, N) from controller
-        delta_a:     torch.Tensor,  # (B, N) from controller
-        gate:        torch.Tensor,  # (B, N) sigmoid output from controller
-        phase_label: torch.Tensor,  # (B,)  int64
+        freqs:       torch.Tensor,   # (B, N)
+        amps:        torch.Tensor,   # (B, N)  ≥ 0
+        phases:      torch.Tensor,   # (B, N)
+        delta_f:     torch.Tensor,   # (B, N)  inharmonicity correction from controller
+        target_amp:  torch.Tensor,   # (B, N)  predicted amplitude ≥ 0 (softplus applied)
+        gate:        torch.Tensor,   # (B, N)  sigmoid gate from controller
+        phase_label: torch.Tensor,   # (B,)    int64
+        f0:          torch.Tensor,   # (B,)    fundamental frequency
     ):
         """One frame of evolution.  Returns (freqs, amps, phases)."""
         device = freqs.device
-        decay  = self.decay.to(device)        # (N,)
+        decay  = self.decay.to(device)   # (N,)
         n_h    = self.n_harmonic
         n_n    = self.n_noise
 
-        # Effective gate: soft × hard
-        eff_gate = gate * self._phase_mask(phase_label)  # (B, N)
+        eff_gate = gate * self._phase_mask(phase_label)   # (B, N)
 
-        # ── Frequency update (harmonic resonators only) ───────────────
-        df_rel   = 0.01 * torch.tanh(delta_f[:, :n_h])         # (B, n_h) small rel. corr.
+        # ── Frequency: re-anchor to ideal harmonics every frame ───────
+        # This prevents cumulative frequency drift.
+        # delta_f adds a tiny ±0.5 % correction (inharmonicity / tuning).
+        ideal_h = self._ideal_harmonic_freqs(f0)           # (B, n_h)
+        df_corr = 0.005 * torch.tanh(delta_f[:, :n_h])    # (B, n_h)
         freqs_new = freqs.clone()
-        freqs_new[:, :n_h] = freqs[:, :n_h] * (1.0 + df_rel * eff_gate[:, :n_h])
+        freqs_new[:, :n_h] = ideal_h * (1.0 + df_corr)   # anchored, no drift
 
-        # ── Amplitude update ──────────────────────────────────────────
-        # Gate scales the amplitude delta; then free decay is applied.
-        amps_updated = amps + delta_a * eff_gate             # (B, N)
-        decay_factor = torch.exp(-decay * self.dt)           # (N,)
-        amps_new = F.softplus(amps_updated * decay_factor.unsqueeze(0))
+        # ── Amplitude: gate blends between natural decay and target ───
+        # When gate=0: resonator decays freely (natural physics).
+        # When gate=1: amplitude snaps to predicted target_amp.
+        decay_factor = torch.exp(-decay * self.dt)          # (N,)
+        amps_decayed = amps * decay_factor.unsqueeze(0)     # (B, N)
+        amps_new     = amps_decayed * (1.0 - eff_gate) + target_amp * eff_gate
 
         # ── Phase advance ─────────────────────────────────────────────
         phases_new = (phases + self.TWO_PI * freqs_new * self.dt) % self.TWO_PI
 
-        # Noise resonators: add random phase jitter (simulates band noise)
-        if n_n > 0:
-            jitter = torch.randn(phases_new.shape[0], n_n, device=device) * self.noise_phase_scale
+        # Noise: random phase jitter per frame
+        if n_n > 0 and self._n_active_n > 0:
+            jitter = (torch.randn(amps_new.shape[0], n_n, device=device)
+                      * self.noise_phase_scale)
             phases_new[:, n_h : n_h + n_n] = (
                 phases_new[:, n_h : n_h + n_n] + jitter
             ) % self.TWO_PI
@@ -240,33 +280,24 @@ class ResonatorBank(nn.Module):
 
     def synthesize_frame(
         self,
-        freqs:  torch.Tensor,  # (B, N)
-        amps:   torch.Tensor,  # (B, N)
-        phases: torch.Tensor,  # (B, N)
+        freqs:  torch.Tensor,   # (B, N)
+        amps:   torch.Tensor,   # (B, N)
+        phases: torch.Tensor,   # (B, N)
     ) -> torch.Tensor:
-        """
-        Generates frame_size samples.
-        Returns (B, 2, frame_size) stereo audio.
-        """
+        """Returns (B, 2, frame_size) stereo audio."""
         device = freqs.device
         Fsz    = self.frame_size
 
-        # Local time within frame [0, Fsz-1] / sr  → seconds
-        t = torch.arange(Fsz, device=device).float() / self.sr  # (Fsz,)
+        t     = torch.arange(Fsz, device=device).float() / self.sr  # (Fsz,)
+        inst  = phases.unsqueeze(-1) + self.TWO_PI * freqs.unsqueeze(-1) * t
+        waves = amps.unsqueeze(-1) * torch.sin(inst)              # (B, N, Fsz)
 
-        # Instantaneous phase: φ_i + 2π·f_i·t_local  →  (B, N, Fsz)
-        inst = phases.unsqueeze(-1) + self.TWO_PI * freqs.unsqueeze(-1) * t
+        pan   = self.pan_params.clamp(0.0, math.pi / 2)
+        pan_l = torch.cos(pan)
+        pan_r = torch.sin(pan)
 
-        # Sine waves weighted by amplitude: (B, N, Fsz)
-        waves = amps.unsqueeze(-1) * torch.sin(inst)
-
-        # Stereo panning
-        pan   = self.pan_params.clamp(0.0, math.pi / 2)  # (N,)
-        pan_l = torch.cos(pan)  # (N,)
-        pan_r = torch.sin(pan)  # (N,)
-
-        audio_l = (waves * pan_l.view(1, -1, 1)).sum(dim=1)  # (B, Fsz)
-        audio_r = (waves * pan_r.view(1, -1, 1)).sum(dim=1)  # (B, Fsz)
+        audio_l = (waves * pan_l.view(1, -1, 1)).sum(dim=1)
+        audio_r = (waves * pan_r.view(1, -1, 1)).sum(dim=1)
 
         return torch.stack([audio_l, audio_r], dim=1)  # (B, 2, Fsz)
 
@@ -276,32 +307,36 @@ class ResonatorBank(nn.Module):
 
     def forward(
         self,
-        f0:           torch.Tensor,  # (B,)
-        vel_norm:     torch.Tensor,  # (B,)
-        control:      torch.Tensor,  # (B, T_frames, N, 2)  [delta_f, delta_a]
-        gates:        torch.Tensor,  # (B, T_frames, N)     sigmoid gate
-        phase_labels: torch.Tensor,  # (B, T_frames)        int64
+        f0:           torch.Tensor,   # (B,)
+        vel_norm:     torch.Tensor,   # (B,)
+        control:      torch.Tensor,   # (B, T_frames, N, 2)  [delta_f, raw_amp]
+        gates:        torch.Tensor,   # (B, T_frames, N)     sigmoid gate
+        phase_labels: torch.Tensor,   # (B, T_frames)        int64
     ) -> torch.Tensor:
         """
         Synthesises T_frames * frame_size audio samples.
         Returns (B, 2, T_samples).
         """
         T_frames = control.shape[1]
+        amp_scale = self.amp_scale.to(f0.device)   # (N,)
 
         freqs, amps, phases = self.init_state(f0, vel_norm)
         audio_frames = []
 
         for t in range(T_frames):
-            delta_f      = control[:, t, :, 0]   # (B, N)
-            delta_a      = control[:, t, :, 1]   # (B, N)
-            gate         = gates[:, t, :]         # (B, N)
-            phase_label  = phase_labels[:, t]     # (B,)
+            delta_f  = control[:, t, :, 0]                        # (B, N)
+            raw_amp  = control[:, t, :, 1]                        # (B, N)
+            gate     = gates[:, t, :]                             # (B, N)
+            pl       = phase_labels[:, t]                         # (B,)
+
+            # Convert raw controller output to absolute amplitude:
+            # amp_scale gives per-resonator learned magnitude; softplus > 0.
+            target_amp = F.softplus(raw_amp) * amp_scale.unsqueeze(0)
 
             freqs, amps, phases = self.evolve(
                 freqs, amps, phases,
-                delta_f, delta_a, gate,
-                phase_label,
+                delta_f, target_amp, gate, pl, f0,
             )
             audio_frames.append(self.synthesize_frame(freqs, amps, phases))
 
-        return torch.cat(audio_frames, dim=-1)  # (B, 2, T_samples)
+        return torch.cat(audio_frames, dim=-1)   # (B, 2, T_samples)
