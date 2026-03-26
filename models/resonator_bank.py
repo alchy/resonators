@@ -69,6 +69,10 @@ class ResonatorBank(nn.Module):
             torch.tensor(math.log(max(inh_init, 1e-8)))
         )
 
+        # Per-partial systematic tuning deviation (±1% via tanh).
+        # Captures piano-like deviations from the ideal inharmonicity formula.
+        self.harm_detune = nn.Parameter(torch.zeros(self.n_harmonic))
+
         d_h = float(rc.get('decay_harmonic_init',   0.5))
         d_n = float(rc.get('decay_noise_init',       3.0))
         d_t = float(rc.get('decay_transient_init', 40.0))
@@ -136,9 +140,11 @@ class ResonatorBank(nn.Module):
 
     def _ideal_harmonic_freqs(self, f0: torch.Tensor) -> torch.Tensor:
         """Returns (B, n_harmonic) ideal harmonic frequencies."""
-        inh = self.inharmonicity
-        hi  = self.harm_idx                                       # (n_h,)
-        return f0.unsqueeze(1) * hi * torch.sqrt(1.0 + inh * hi.pow(2))
+        inh    = self.inharmonicity
+        hi     = self.harm_idx                                    # (n_h,)
+        base   = f0.unsqueeze(1) * hi * torch.sqrt(1.0 + inh * hi.pow(2))
+        detune = 0.01 * torch.tanh(self.harm_detune).unsqueeze(0)  # ±1%
+        return base * (1.0 + detune)
 
     # ──────────────────────────────────────────────────────────────────
     # State initialisation
@@ -288,16 +294,44 @@ class ResonatorBank(nn.Module):
         device = freqs.device
         Fsz    = self.frame_size
 
-        t     = torch.arange(Fsz, device=device).float() / self.sr  # (Fsz,)
-        inst  = phases.unsqueeze(-1) + self.TWO_PI * freqs.unsqueeze(-1) * t
-        waves = amps.unsqueeze(-1) * torch.sin(inst)              # (B, N, Fsz)
+        B      = freqs.shape[0]
+        n_h    = self._n_active_h
+        n_n    = self._n_active_n
+        n_h_max = self.n_harmonic
 
-        pan   = self.pan_params.clamp(0.0, math.pi / 2)
-        pan_l = torch.cos(pan)
-        pan_r = torch.sin(pan)
+        t     = torch.arange(Fsz, device=device).float() / self.sr  # (Fsz,)
+
+        # ── Harmonic + transient branches: sine oscillators ───────────
+        # Exclude noise slots from sinusoidal rendering
+        harm_trans_idx = list(range(n_h_max)) + list(range(n_h_max + self.n_noise, self.N))
+        freqs_ht  = freqs[:, harm_trans_idx]
+        amps_ht   = amps[:,  harm_trans_idx]
+        phases_ht = phases[:, harm_trans_idx]
+
+        inst   = phases_ht.unsqueeze(-1) + self.TWO_PI * freqs_ht.unsqueeze(-1) * t
+        waves  = amps_ht.unsqueeze(-1) * torch.sin(inst)          # (B, N_ht, Fsz)
+
+        # ── Noise branch: white noise scaled by predicted amplitude ───
+        if self.n_noise > 0 and n_n > 0:
+            noise_amps = amps[:, n_h_max : n_h_max + self.n_noise]  # (B, n_noise)
+            noise_sig  = torch.randn(B, self.n_noise, Fsz, device=device)
+            noise_sig  = noise_sig * noise_amps.unsqueeze(-1)
+        else:
+            noise_sig = torch.zeros(B, self.n_noise, Fsz, device=device)
+
+        # ── Pan + mix ─────────────────────────────────────────────────
+        pan_ht = self.pan_params[harm_trans_idx].clamp(0.0, math.pi / 2)
+        pan_l  = torch.cos(pan_ht)
+        pan_r  = torch.sin(pan_ht)
+
+        pan_n  = self.pan_params[n_h_max : n_h_max + self.n_noise].clamp(0.0, math.pi / 2)
+        pan_nl = torch.cos(pan_n)
+        pan_nr = torch.sin(pan_n)
 
         audio_l = (waves * pan_l.view(1, -1, 1)).sum(dim=1)
         audio_r = (waves * pan_r.view(1, -1, 1)).sum(dim=1)
+        audio_l = audio_l + (noise_sig * pan_nl.view(1, -1, 1)).sum(dim=1)
+        audio_r = audio_r + (noise_sig * pan_nr.view(1, -1, 1)).sum(dim=1)
 
         return torch.stack([audio_l, audio_r], dim=1)  # (B, 2, Fsz)
 

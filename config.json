@@ -64,6 +64,7 @@
     "w_mrstft":   1.0,
     "w_eng":      0.4,
     "w_sparsity": 0.03,
+    "w_df_smooth": 0.01,
     "attack_weight": 5.0,
     "mrstft_ffts": [256, 1024, 4096]
   },

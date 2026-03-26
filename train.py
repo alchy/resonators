@@ -224,8 +224,10 @@ def run_epoch(
             T_frames_used = T_out // cfg['frame_size']
             phases_cut    = phases[:, :T_frames_used]
             gates_cut     = gates[:, :T_frames_used, :]
+            delta_f_harm  = control[:, :T_frames_used, :bank.n_harmonic, 0]
 
-            total, ld = loss_fn(pred_cut, target_cut, phases_cut, gates_cut)
+            total, ld = loss_fn(pred_cut, target_cut, phases_cut, gates_cut,
+                                delta_f=delta_f_harm)
 
             if is_train:
                 optimizer.zero_grad()
@@ -238,8 +240,15 @@ def run_epoch(
                 if scheduler:
                     scheduler.step()
                 if ema:
-                    ema.update(controller)
-                    ema.update(bank)
+                    ema[0].update(controller)
+                    ema[1].update(bank)
+
+            # Branch gate diagnostics (detached, no overhead on backward)
+            n_h = bank.n_harmonic
+            n_n = bank.n_noise
+            ld['gate_h'] = gates_cut[:, :, :n_h].detach().mean().item()
+            ld['gate_n'] = gates_cut[:, :, n_h:n_h+n_n].detach().mean().item()
+            ld['gate_t'] = gates_cut[:, :, n_h+n_n:].detach().mean().item()
 
             for k, v in ld.items():
                 totals[k] = totals.get(k, 0.0) + v
@@ -326,7 +335,9 @@ def main():
         lr=lr, betas=(0.9, 0.999), weight_decay=0.01,
     )
     scheduler = WarmupCosineScheduler(optimizer, warmup, total_stp)
-    ema       = EMA(controller, cfg['training']['ema_decay'])
+    ema_ctrl  = EMA(controller, cfg['training']['ema_decay'])
+    ema_bank  = EMA(bank,       cfg['training']['ema_decay'])
+    ema       = (ema_ctrl, ema_bank)
 
     start_epoch = 0
     best_val    = float('inf')

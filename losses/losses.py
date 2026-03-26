@@ -31,12 +31,13 @@ class EGRBLoss(nn.Module):
         super().__init__()
         lc = cfg['loss']
 
-        self.w_mrstft  = float(lc.get('w_mrstft',   1.0))
-        self.w_l1      = float(lc.get('w_l1',        0.5))
-        self.w_kin     = float(lc.get('w_kin',       0.4))
-        self.w_eng     = float(lc.get('w_eng',       0.4))
-        self.w_sparse  = float(lc.get('w_sparsity',  0.03))
-        self.atk_wt    = float(lc.get('attack_weight', 5.0))
+        self.w_mrstft    = float(lc.get('w_mrstft',    1.0))
+        self.w_l1        = float(lc.get('w_l1',        0.5))
+        self.w_kin       = float(lc.get('w_kin',       0.4))
+        self.w_eng       = float(lc.get('w_eng',       0.4))
+        self.w_sparse    = float(lc.get('w_sparsity',  0.03))
+        self.w_df_smooth = float(lc.get('w_df_smooth', 0.01))
+        self.atk_wt      = float(lc.get('attack_weight', 5.0))
 
         self.frame_size = int(cfg['frame_size'])  # 256
 
@@ -161,6 +162,17 @@ class EGRBLoss(nn.Module):
         return F.l1_loss(rms_p, rms_t)
 
     # ──────────────────────────────────────────────────────────────────
+    # delta_f temporal smoothness
+    # ──────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _df_smooth(delta_f: torch.Tensor) -> torch.Tensor:
+        """(B, T, n_harmonic) → scalar: L1 of frame-to-frame delta_f change."""
+        if delta_f.shape[1] < 2:
+            return delta_f.new_tensor(0.0)
+        return (delta_f[:, 1:] - delta_f[:, :-1]).abs().mean()
+
+    # ──────────────────────────────────────────────────────────────────
     # Sparsity (gate penalty in non-attack frames)
     # ──────────────────────────────────────────────────────────────────
 
@@ -179,10 +191,11 @@ class EGRBLoss(nn.Module):
 
     def forward(
         self,
-        pred:         torch.Tensor,   # (B, 2, T_samples)
-        target:       torch.Tensor,   # (B, 2, T_samples)
-        phase_labels: torch.Tensor,   # (B, T_frames) int64
-        gates:        torch.Tensor,   # (B, T_frames, N)
+        pred:         torch.Tensor,          # (B, 2, T_samples)
+        target:       torch.Tensor,          # (B, 2, T_samples)
+        phase_labels: torch.Tensor,          # (B, T_frames) int64
+        gates:        torch.Tensor,          # (B, T_frames, N)
+        delta_f:      torch.Tensor | None = None,  # (B, T_frames, n_harmonic)
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
 
         T_samples = pred.shape[-1]
@@ -217,6 +230,11 @@ class EGRBLoss(nn.Module):
             l = self._sparsity(gates, phase_labels)
             total = total + self.w_sparse * l
             ld['sparse'] = l.item()
+
+        if self.w_df_smooth > 0 and delta_f is not None:
+            l = self._df_smooth(delta_f)
+            total = total + self.w_df_smooth * l
+            ld['df_sm'] = l.item()
 
         ld['total'] = total.item()
         return total, ld
