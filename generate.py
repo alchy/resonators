@@ -4,14 +4,17 @@ Synthesise a full piano sample bank from a trained EGRB model.
 
 For each MIDI note (21–108) × velocity (0–7):
   1. Compute f0 from MIDI, vel_norm from velocity index.
-  2. EnvelopeNet predicts RMS curve + ADSR phase labels from (midi_norm, vel_norm).
-     No training samples are needed at inference — the envelope is fully generalised.
-  3. GRUController + ResonatorBank synthesise audio conditioned on the envelope.
-  4. Peak-normalise and save as 16-bit WAV.
+  2. Duration is looked up from the training manifest (mean duration_s per
+     midi_note × vel_idx).  Missing combos fall back to the nearest midi_note
+     with matching vel_idx, then to the global mean for that midi_note.
+  3. EnvelopeNet predicts RMS curve + ADSR phase labels from (midi_norm, vel_norm).
+  4. GRUController + ResonatorBank synthesise audio conditioned on the envelope.
+  5. Peak-normalise and save as 16-bit WAV.
 
 Requires:
   checkpoints/best.pt      — main model checkpoint
   checkpoints/envelope.pt  — EnvelopeNet checkpoint (produced by train.py)
+  data/manifest.json       — produced by data/prepare.py
 
 Output filename convention: m{MIDI:03d}-vel{VEL}-f48.wav
 
@@ -71,14 +74,56 @@ def synthesise_note(
     return audio_np.astype(np.float32)
 
 
+def build_duration_map(manifest_path: str) -> dict:
+    """
+    Returns {(midi_note, vel_idx): duration_s} from the training manifest.
+    Missing (note, vel) combos are filled by nearest midi_note with the same
+    vel_idx, then by the global mean duration for that midi_note.
+    """
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    # Exact lookup from training data
+    exact: dict = {}
+    for entry in manifest:
+        key = (int(entry['midi_note']), int(entry['vel_idx']))
+        exact.setdefault(key, []).append(float(entry['duration_s']))
+    mean_exact = {k: float(np.mean(v)) for k, v in exact.items()}
+
+    # Per-note mean across all velocities (fallback)
+    note_mean: dict = {}
+    for (note, _), dur in mean_exact.items():
+        note_mean.setdefault(note, []).append(dur)
+    note_mean = {n: float(np.mean(v)) for n, v in note_mean.items()}
+
+    known_notes = sorted(note_mean.keys())
+
+    def nearest_note_dur(note: int, vel: int) -> float:
+        # Try same vel_idx at nearest midi_note first
+        for delta in range(1, 89):
+            for candidate in (note - delta, note + delta):
+                if (candidate, vel) in mean_exact:
+                    return mean_exact[(candidate, vel)]
+        # Fallback: nearest note mean
+        closest = min(known_notes, key=lambda n: abs(n - note))
+        return note_mean[closest]
+
+    result = {}
+    for note in range(21, 109):
+        for vel in range(8):
+            if (note, vel) in mean_exact:
+                result[(note, vel)] = mean_exact[(note, vel)]
+            else:
+                result[(note, vel)] = nearest_note_dur(note, vel)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', default='checkpoints/best.pt')
     parser.add_argument('--config',     default=None,
                         help='Override config (default: taken from checkpoint)')
     parser.add_argument('--output',     default='generated')
-    parser.add_argument('--duration',   type=float, default=3.0,
-                        help='Duration in seconds (default 3.0)')
     parser.add_argument('--notes', nargs='*', type=int, default=None,
                         help='MIDI notes to generate (default: 21-108, all 88 keys)')
     parser.add_argument('--vels',  nargs='*', type=int, default=None,
@@ -91,6 +136,18 @@ def main():
 
     ckpt = torch.load(args.checkpoint, map_location='cpu')
     cfg  = ckpt['cfg'] if args.config is None else json.load(open(args.config))
+
+    # Duration lookup from manifest
+    manifest_path = os.path.join(
+        os.path.dirname(cfg.get('data_dir', 'data/prepared')) or '.', 'manifest.json'
+    )
+    if not os.path.exists(manifest_path):
+        print(f"Manifest not found: {manifest_path}")
+        print("Run:  python data/prepare.py")
+        sys.exit(1)
+    dur_map = build_duration_map(manifest_path)
+    print(f"Duration map loaded from {manifest_path}  "
+          f"({len(dur_map)} note×vel combos)")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
@@ -118,17 +175,19 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
 
-    notes    = args.notes or list(range(21, 109))
-    vels     = args.vels  or list(range(8))
-    T_frames = int(args.duration * SR / FRAME_SIZE)
+    notes = args.notes or list(range(21, 109))
+    vels  = args.vels  or list(range(8))
 
     total = len(notes) * len(vels)
     done  = 0
     for midi_note in notes:
         for vel_idx in vels:
-            f0         = midi_to_f0(midi_note)
-            vel_norm   = vel_idx / 7.0
-            midi_norm  = midi_note / 127.0
+            f0       = midi_to_f0(midi_note)
+            vel_norm = vel_idx / 7.0
+            midi_norm = midi_note / 127.0
+
+            dur_s    = dur_map[(midi_note, vel_idx)]
+            T_frames = max(1, int(dur_s * SR / FRAME_SIZE))
 
             rms, phases_arr = env_net.predict(midi_norm, vel_norm, T_frames)
 
@@ -136,12 +195,12 @@ def main():
                 controller, bank, f0, vel_norm, rms, phases_arr, device
             )
 
-            name    = f"m{midi_note:03d}-vel{vel_idx}-f48.wav"
+            name     = f"m{midi_note:03d}-vel{vel_idx}-f48.wav"
             out_path = os.path.join(args.output, name)
             sf.write(out_path, audio.T, SR, subtype='PCM_16')
 
             done += 1
-            print(f"  [{done:4d}/{total}]  {name}  f0={f0:.1f}Hz")
+            print(f"  [{done:4d}/{total}]  {name}  f0={f0:.1f}Hz  dur={dur_s:.1f}s")
 
     print(f"\nDone. {done} files -> {args.output}/")
 
