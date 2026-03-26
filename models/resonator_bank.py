@@ -64,14 +64,23 @@ class ResonatorBank(nn.Module):
 
         # ── Learnable parameters ──────────────────────────────────────
 
-        inh_init = float(rc.get('inharmonicity_init', 1e-4))
-        self.log_inharmonicity = nn.Parameter(
-            torch.tensor(math.log(max(inh_init, 1e-8)))
-        )
+        # MIDI-dependent inharmonicity: B varies from B_lo (bass) to B_hi (treble).
+        # Real piano: B ≈ 0.0001–0.001 (bass ~10× treble).
+        B_lo = float(rc.get('B_lo_init', 5e-4))
+        B_hi = float(rc.get('B_hi_init', 5e-5))
+        self.log_B_lo = nn.Parameter(torch.tensor(math.log(max(B_lo, 1e-9))))
+        self.log_B_hi = nn.Parameter(torch.tensor(math.log(max(B_hi, 1e-9))))
 
         # Per-partial systematic tuning deviation (±1% via tanh).
-        # Captures piano-like deviations from the ideal inharmonicity formula.
+        # Captures residual deviations beyond the inharmonicity formula.
         self.harm_detune = nn.Parameter(torch.zeros(self.n_harmonic))
+
+        # Unison spread: models slight string-group detuning that produces
+        # characteristic piano beating.  Stored as log_cents (≥ 0), applied as
+        # ± spread alternating across partials.  Init: ~0.5 cents.
+        self.log_unison_cents = nn.Parameter(
+            torch.tensor(math.log(0.5))
+        )
 
         d_h = float(rc.get('decay_harmonic_init',   0.5))
         d_n = float(rc.get('decay_noise_init',       3.0))
@@ -127,10 +136,6 @@ class ResonatorBank(nn.Module):
     # ──────────────────────────────────────────────────────────────────
 
     @property
-    def inharmonicity(self) -> torch.Tensor:
-        return self.log_inharmonicity.exp()
-
-    @property
     def decay(self) -> torch.Tensor:
         return self.log_decay.exp()
 
@@ -140,11 +145,31 @@ class ResonatorBank(nn.Module):
 
     def _ideal_harmonic_freqs(self, f0: torch.Tensor) -> torch.Tensor:
         """Returns (B, n_harmonic) ideal harmonic frequencies."""
-        inh    = self.inharmonicity
-        hi     = self.harm_idx                                    # (n_h,)
-        base   = f0.unsqueeze(1) * hi * torch.sqrt(1.0 + inh * hi.pow(2))
+        hi = self.harm_idx  # (n_h,)
+
+        # ── MIDI-dependent inharmonicity ──────────────────────────────
+        # Interpolate log_B linearly from bass (B_lo) to treble (B_hi).
+        LOG_F0_LO = math.log(27.5)    # A0
+        LOG_F0_HI = math.log(4186.0)  # C8
+        midi_norm = ((torch.log(f0.clamp(min=1.0)) - LOG_F0_LO)
+                     / (LOG_F0_HI - LOG_F0_LO)).clamp(0.0, 1.0)  # (B,)
+        log_B = (self.log_B_lo * (1.0 - midi_norm)
+                 + self.log_B_hi * midi_norm)                      # (B,)
+        inh   = log_B.exp().unsqueeze(1)                           # (B, 1)
+
+        base = f0.unsqueeze(1) * hi * torch.sqrt(1.0 + inh * hi.pow(2))  # (B, n_h)
+
+        # ── Per-partial systematic detune (residual beyond formula) ──
         detune = 0.01 * torch.tanh(self.harm_detune).unsqueeze(0)  # ±1%
-        return base * (1.0 + detune)
+
+        # ── Unison spread: alternating ± per partial (piano beating) ─
+        # cents capped at 5 cents; alternating sign creates pair-wise beating
+        cents  = self.log_unison_cents.exp().clamp(max=5.0)
+        sign   = torch.where(hi % 2 == 0,
+                             torch.ones_like(hi), -torch.ones_like(hi))
+        spread = 2.0 ** (cents * sign / 1200.0) - 1.0             # (n_h,)
+
+        return base * (1.0 + detune + spread.unsqueeze(0))
 
     # ──────────────────────────────────────────────────────────────────
     # State initialisation
