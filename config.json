@@ -64,7 +64,7 @@
     "w_mrstft":   1.0,
     "w_eng":      0.4,
     "w_sparsity": 0.03,
-    "w_df_smooth": 0.01,
+    "w_df_smooth": 0.05,
     "attack_weight": 5.0,
     "mrstft_ffts": [256, 1024, 4096]
   },
@@ -74,7 +74,7 @@
     "learning_rate":   3e-4,
     "epochs":        200,
     "steps_per_epoch": 200,
-    "val_split":       0.1,
+    "val_split":       0.15,
     "grad_clip":       1.0,
     "warmup_steps":   300,
     "ema_decay":       0.999,
