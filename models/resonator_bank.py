@@ -235,42 +235,60 @@ class ResonatorBank(nn.Module):
 
     def evolve(
         self,
-        freqs:       torch.Tensor,   # (B, N)
-        amps:        torch.Tensor,   # (B, N)  ≥ 0
-        phases:      torch.Tensor,   # (B, N)
-        delta_f:     torch.Tensor,   # (B, N)  inharmonicity correction from controller
-        target_amp:  torch.Tensor,   # (B, N)  predicted amplitude ≥ 0 (softplus applied)
-        gate:        torch.Tensor,   # (B, N)  sigmoid gate from controller
-        phase_label: torch.Tensor,   # (B,)    int64
-        f0:          torch.Tensor,   # (B,)    fundamental frequency
+        freqs:         torch.Tensor,   # (B, N)
+        amps:          torch.Tensor,   # (B, N)  ≥ 0
+        phases:        torch.Tensor,   # (B, N)
+        delta_f:       torch.Tensor,   # (B, N)  inharmonicity correction from controller
+        raw_exc:       torch.Tensor,   # (B, N)  excitation energy (before softplus)
+        raw_decay_mul: torch.Tensor,   # (B, N)  decay rate modulation (before sigmoid)
+        gate:          torch.Tensor,   # (B, N)  sigmoid gate = excitation mask
+        phase_label:   torch.Tensor,   # (B,)    int64
+        f0:            torch.Tensor,   # (B,)    fundamental frequency
     ):
         """One frame of evolution.  Returns (freqs, amps, phases)."""
-        device = freqs.device
-        decay  = self.decay.to(device)   # (N,)
-        n_h    = self.n_harmonic
-        n_n    = self.n_noise
+        device    = freqs.device
+        base_decay = self.decay.to(device)   # (N,)
+        n_h        = self.n_harmonic
+        n_n        = self.n_noise
+        amp_scale  = self.amp_scale.to(device)
 
         eff_gate = gate * self._phase_mask(phase_label)   # (B, N)
 
-        # ── Frequency: re-anchor to ideal harmonics every frame ───────
-        # This prevents cumulative frequency drift.
-        # delta_f adds a tiny ±0.5 % correction (inharmonicity / tuning).
-        ideal_h = self._ideal_harmonic_freqs(f0)           # (B, n_h)
-        df_corr = 0.005 * torch.tanh(delta_f[:, :n_h])    # (B, n_h)
+        # ── Frequency: re-anchor harmonics each frame ─────────────────
+        ideal_h   = self._ideal_harmonic_freqs(f0)           # (B, n_h)
+        df_corr   = 0.005 * torch.tanh(delta_f[:, :n_h])    # (B, n_h) ±0.5%
         freqs_new = freqs.clone()
-        freqs_new[:, :n_h] = ideal_h * (1.0 + df_corr)   # anchored, no drift
+        freqs_new[:, :n_h] = ideal_h * (1.0 + df_corr)
 
-        # ── Amplitude: gate blends between natural decay and target ───
-        # When gate=0: resonator decays freely (natural physics).
-        # When gate=1: amplitude snaps to predicted target_amp.
-        decay_factor = torch.exp(-decay * self.dt)          # (N,)
-        amps_decayed = amps * decay_factor.unsqueeze(0)     # (B, N)
-        amps_new     = amps_decayed * (1.0 - eff_gate) + target_amp * eff_gate
+        # ── Amplitude: branch-specific update ────────────────────────
+
+        # Harmonic branch — physical decay + excitation injection
+        # decay_scale ∈ [0.5, 2.0]: modulates how fast each partial decays
+        decay_mod_h   = torch.sigmoid(raw_decay_mul[:, :n_h])      # (B, n_h)
+        decay_scale_h = 0.5 + 1.5 * decay_mod_h                    # (B, n_h)
+        eff_decay_h   = base_decay[:n_h].unsqueeze(0) * decay_scale_h
+        decay_fac_h   = torch.exp(-eff_decay_h * self.dt)
+        amps_decayed_h = amps[:, :n_h] * decay_fac_h
+
+        excitation_h = F.softplus(raw_exc[:, :n_h]) * amp_scale[:n_h].unsqueeze(0)
+        injected_h   = excitation_h * eff_gate[:, :n_h]
+
+        # Noise + transient branches — keep stable blend (gate → target_amp)
+        # target_amp for these branches derived from raw_exc via softplus
+        nt_slice = slice(n_h, self.N)
+        decay_fac_nt  = torch.exp(-base_decay[n_h:].unsqueeze(0) * self.dt)
+        amps_decayed_nt = amps[:, n_h:] * decay_fac_nt
+        target_nt     = F.softplus(raw_exc[:, n_h:]) * amp_scale[n_h:].unsqueeze(0)
+        eff_gate_nt   = eff_gate[:, n_h:]
+
+        amps_new = amps.clone()
+        amps_new[:, :n_h]  = amps_decayed_h + injected_h
+        amps_new[:, n_h:]  = amps_decayed_nt * (1.0 - eff_gate_nt) + target_nt * eff_gate_nt
 
         # ── Phase advance ─────────────────────────────────────────────
         phases_new = (phases + self.TWO_PI * freqs_new * self.dt) % self.TWO_PI
 
-        # Noise: random phase jitter per frame
+        # Noise: random phase jitter (kept for noise branch consistency)
         if n_n > 0 and self._n_active_n > 0:
             jitter = (torch.randn(amps_new.shape[0], n_n, device=device)
                       * self.noise_phase_scale)
@@ -343,7 +361,7 @@ class ResonatorBank(nn.Module):
         self,
         f0:           torch.Tensor,   # (B,)
         vel_norm:     torch.Tensor,   # (B,)
-        control:      torch.Tensor,   # (B, T_frames, N, 2)  [delta_f, raw_amp]
+        control:      torch.Tensor,   # (B, T_frames, N, 3)  [delta_f, raw_exc, raw_decay_mul]
         gates:        torch.Tensor,   # (B, T_frames, N)     sigmoid gate
         phase_labels: torch.Tensor,   # (B, T_frames)        int64
     ) -> torch.Tensor:
@@ -358,18 +376,15 @@ class ResonatorBank(nn.Module):
         audio_frames = []
 
         for t in range(T_frames):
-            delta_f  = control[:, t, :, 0]                        # (B, N)
-            raw_amp  = control[:, t, :, 1]                        # (B, N)
-            gate     = gates[:, t, :]                             # (B, N)
-            pl       = phase_labels[:, t]                         # (B,)
-
-            # Convert raw controller output to absolute amplitude:
-            # amp_scale gives per-resonator learned magnitude; softplus > 0.
-            target_amp = F.softplus(raw_amp) * amp_scale.unsqueeze(0)
+            delta_f       = control[:, t, :, 0]   # (B, N)
+            raw_exc       = control[:, t, :, 1]   # (B, N)
+            raw_decay_mul = control[:, t, :, 2]   # (B, N)
+            gate          = gates[:, t, :]         # (B, N)
+            pl            = phase_labels[:, t]     # (B,)
 
             freqs, amps, phases = self.evolve(
                 freqs, amps, phases,
-                delta_f, target_amp, gate, pl, f0,
+                delta_f, raw_exc, raw_decay_mul, gate, pl, f0,
             )
             audio_frames.append(self.synthesize_frame(freqs, amps, phases))
 

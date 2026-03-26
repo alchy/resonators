@@ -12,9 +12,10 @@ Input per frame (concatenated):
 Pre-MLP → GRU → Post-MLP
 
 Output per frame per resonator:
-  delta_f    – inharmonicity/tuning correction (±0.5 % relative, via tanh in bank)
-  raw_amp    – raw amplitude prediction; bank applies softplus × amp_scale
-  raw_gate   – before sigmoid; caller applies sigmoid
+  delta_f       – inharmonicity/tuning correction (±0.5 % relative, via tanh in bank)
+  raw_exc       – excitation energy to inject; bank applies softplus × amp_scale
+  raw_decay_mul – per-frame decay rate modulation; bank maps sigmoid → [0.5, 2.0]×base
+  raw_gate      – excitation mask (soft open/close); caller applies sigmoid
 """
 
 import math
@@ -58,22 +59,20 @@ class GRUController(nn.Module):
         self.post_mlp = nn.Sequential(
             nn.Linear(gru_h, post_dim),
             nn.ReLU(),
-            nn.Linear(post_dim, self.N * 3),   # (delta_f, raw_amp, raw_gate) × N
+            nn.Linear(post_dim, self.N * 4),   # (delta_f, raw_exc, raw_decay_mul, raw_gate) × N
         )
 
         # Initialise output layer small
         nn.init.normal_(self.post_mlp[-1].weight, std=0.01)
         nn.init.zeros_(self.post_mlp[-1].bias)
 
-        # Gate outputs (index 2, 5, 8, …): strong negative bias → gates start ~0.02
-        # This forces the model to learn to open gates explicitly rather than
-        # having all resonators active from epoch 1.
         with torch.no_grad():
-            self.post_mlp[-1].bias[2::3].fill_(-4.0)
-
-            # raw_amp outputs (index 1, 4, 7, …): mild negative bias so that
-            # softplus(bias) × amp_scale starts at a small, reasonable level.
-            self.post_mlp[-1].bias[1::3].fill_(-3.0)
+            # raw_gate (index 3, 7, 11, …): strong negative bias → gates start ~0.02
+            self.post_mlp[-1].bias[3::4].fill_(-4.0)
+            # raw_exc (index 1, 5, 9, …): small initial excitation
+            self.post_mlp[-1].bias[1::4].fill_(-3.0)
+            # raw_decay_mul (index 2, 6, 10, …): zero → sigmoid(0)=0.5 → scale=1.25×base
+            self.post_mlp[-1].bias[2::4].zero_()
 
     # ──────────────────────────────────────────────────────────────────
     # Sinusoidal positional encoding  (fixed, not learnable)
@@ -130,12 +129,13 @@ class GRUController(nn.Module):
 
         gru_out, _ = self.gru(feat)
 
-        out  = self.post_mlp(gru_out)               # (B, T, N*3)
-        out  = out.reshape(B, T, self.N, 3)
+        out  = self.post_mlp(gru_out)               # (B, T, N*4)
+        out  = out.reshape(B, T, self.N, 4)
 
-        delta_f  = out[..., 0]                      # (B, T, N)
-        raw_amp  = out[..., 1]                      # (B, T, N)
-        gate     = torch.sigmoid(out[..., 2])       # (B, T, N)  ∈ (0, 1)
+        delta_f       = out[..., 0]                 # (B, T, N)
+        raw_exc       = out[..., 1]                 # (B, T, N)
+        raw_decay_mul = out[..., 2]                 # (B, T, N)
+        gate          = torch.sigmoid(out[..., 3])  # (B, T, N)  ∈ (0, 1)
 
-        control = torch.stack([delta_f, raw_amp], dim=-1)   # (B, T, N, 2)
+        control = torch.stack([delta_f, raw_exc, raw_decay_mul], dim=-1)  # (B, T, N, 3)
         return control, gate
