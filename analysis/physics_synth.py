@@ -37,7 +37,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import fftconvolve
+from scipy.signal import fftconvolve, lfilter
 
 
 # ── String count per MIDI note ────────────────────────────────────────────────
@@ -191,14 +191,21 @@ def synthesize_note(params: dict,
             env = np.exp(-t / tau1)
         beat = (p.get('beat_hz', 0.0) or 0.0) * beat_scale
 
-        if n_str == 1 or beat < 0.05:
+        if n_str == 1:
+            # Monochord: always center, no beat
             phi = rng.uniform(0, 2 * math.pi)
             s = amp * env * np.cos(2 * math.pi * f * t + phi)
-            # No beating: use center pan (average of string positions)
-            # to avoid L/R imbalance from unbeaten partials
-            center_angle = angles[len(angles) // 2]
-            gl, gr = _pan_gains(center_angle)
+            gl, gr = _pan_gains(angles[0])
             L += s * gl;  R += s * gr
+        elif beat < 0.05 and n_str > 1:
+            # Multi-string but effectively no beating: use per-string panning
+            # without frequency spread (same frequency, different phase + pan)
+            phis = rng.uniform(0, 2 * math.pi, n_str)
+            oscs = [np.cos(2 * math.pi * f * t + phis[i]) for i in range(n_str)]
+            for i in range(n_str):
+                gl, gr = _pan_gains(angles[i])
+                s = amp * env * oscs[i] / n_str
+                L += s * gl;  R += s * gr
         elif n_str == 2:
             pa, pb = rng.uniform(0, 2 * math.pi, 2)
             sa = amp * env * np.cos(2 * math.pi * (f + beat / 2) * t + pa)
@@ -219,11 +226,16 @@ def synthesize_note(params: dict,
             R += (sa * gra + sb * grb + sc * grc) / 3.0
 
     # Attack noise: independent L/R, pure transient (no persistent floor)
+    # tau_noise capped at k=1 string decay -- hammer always decays faster than string
     noise_p = params.get('noise', {})
-    taun    = noise_p.get('attack_tau_s', 0.05) or 0.05
-    cent    = noise_p.get('centroid_hz', 3000.0) or 3000.0
-    alp     = 1.0 - math.exp(-2 * math.pi * min(cent, sr * 0.45) / sr)
-    nenv    = np.exp(-t / max(taun, 0.001))
+    taun_raw = noise_p.get('attack_tau_s', 0.05) or 0.05
+    cent     = noise_p.get('centroid_hz', 3000.0) or 3000.0
+    # Find tau1 of k=1 partial to cap noise decay
+    tau1_k1 = next((p.get('tau1', 3.0) for p in partials
+                    if p.get('k') == 1 and p.get('A0') and p['A0'] > 1e-10), 3.0) or 3.0
+    taun = min(taun_raw, tau1_k1)  # noise never outlasts the string
+    alp  = 1.0 - math.exp(-2 * math.pi * min(cent, sr * 0.45) / sr)
+    nenv = np.exp(-t / max(taun, 0.001))
     for buf in (L, R):
         raw = rng.standard_normal(n)
         sh = np.zeros(n);  y = 0.0
@@ -239,6 +251,21 @@ def synthesize_note(params: dict,
     if fade_out > 0 and duration > fade_out:
         nf = int(fade_out * sr);  fade = np.linspace(1.0, 0.0, nf)
         L[-nf:] *= fade;  R[-nf:] *= fade
+
+    # Frequency-dependent stereo decorrelation (Schroeder all-pass pair)
+    # Replicates the natural L/R differences from mic geometry and soundboard coupling.
+    # Decorrelation strength scales with MIDI (treble needs more width).
+    decor_strength = min(1.0, (midi - 40) / 60.0) * 0.45  # 0 at bass, 0.45 at treble
+    if decor_strength > 0.01:
+        # Simple first-order all-pass: y[n] = -g*x[n] + x[n-1] + g*y[n-1]
+        # Applied with different coefficients to L and R -> decorrelates them
+        g_L = 0.35 + decor_strength * 0.25  # ~0.35-0.46
+        g_R = -(0.35 + decor_strength * 0.20)  # opposite sign = phase flip at Nyquist
+        # All-pass for L: b=[−g, 1], a=[1, g]
+        L_ap = lfilter([-g_L, 1.0], [1.0, g_L], L)
+        R_ap = lfilter([-g_R, 1.0], [1.0, g_R], R)
+        L = L * (1 - decor_strength) + L_ap * decor_strength
+        R = R * (1 - decor_strength) + R_ap * decor_strength
 
     # RMS normalize -- avoids overboosting from peak normalization
     rms = math.sqrt((np.mean(L ** 2) + np.mean(R ** 2)) / 2)
