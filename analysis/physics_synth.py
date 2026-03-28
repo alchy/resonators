@@ -57,9 +57,10 @@ def synth_config_to_kwargs(config: dict) -> dict:
     s = config.get('stereo', {})
     for key, section in [
         ('sr', r), ('duration', r), ('fade_out', r), ('target_rms', r),
+        ('onset_ms', r),
         ('harmonic_brightness', t), ('beat_scale', t),
-        ('eq_strength', t), ('soundboard_strength', t),
-        ('pan_spread', s), ('stereo_boost', s),
+        ('eq_strength', t), ('soundboard_strength', t), ('noise_level', t),
+        ('pan_spread', s), ('stereo_boost', s), ('stereo_decorr', s),
     ]:
         if key in section and not key.startswith('_'):
             kwargs[key] = section[key]
@@ -265,6 +266,9 @@ def synthesize_note(params: dict,
                     harmonic_brightness: float = 0.0,
                     fade_out: float = 0.5,
                     target_rms: float = 0.06,
+                    noise_level: float = 1.0,
+                    stereo_decorr: float = 1.0,
+                    onset_ms: float = 3.0,
                     rng_seed: int = None) -> np.ndarray:
     """Synthesize a piano note in stereo (N,2) via per-string panning.
 
@@ -353,9 +357,10 @@ def synthesize_note(params: dict,
 
     # Attack noise: independent L/R, pure transient (no persistent floor)
     # tau_noise capped at k=1 string decay -- hammer always decays faster than string
-    noise_p = params.get('noise', {})
+    noise_p  = params.get('noise', {})
     taun_raw = noise_p.get('attack_tau_s', 0.05) or 0.05
     cent     = noise_p.get('centroid_hz', 3000.0) or 3000.0
+    A_noise  = (noise_p.get('A_noise', 0.06) or 0.06) * noise_level
     # Find tau1 of k=1 partial to cap noise decay
     tau1_k1 = next((p.get('tau1', 3.0) for p in partials
                     if p.get('k') == 1 and p.get('A0') and p['A0'] > 1e-10), 3.0) or 3.0
@@ -367,7 +372,7 @@ def synthesize_note(params: dict,
         sh = np.zeros(n);  y = 0.0
         for i in range(n):
             y = alp * raw[i] + (1 - alp) * y;  sh[i] = y
-        buf += 0.06 * sh * nenv
+        buf += A_noise * sh * nenv
 
     if soundboard_strength > 0.005:
         ir = get_soundboard_ir(sr)
@@ -381,7 +386,7 @@ def synthesize_note(params: dict,
     # Frequency-dependent stereo decorrelation (Schroeder all-pass pair)
     # Replicates the natural L/R differences from mic geometry and soundboard coupling.
     # Decorrelation strength scales with MIDI (treble needs more width).
-    decor_strength = min(1.0, (midi - 40) / 60.0) * 0.45  # 0 at bass, 0.45 at treble
+    decor_strength = min(1.0, (midi - 40) / 60.0) * 0.45 * stereo_decorr
     if decor_strength > 0.01:
         # Simple first-order all-pass: y[n] = -g*x[n] + x[n-1] + g*y[n-1]
         # Applied with different coefficients to L and R -> decorrelates them
@@ -428,118 +433,13 @@ def synthesize_note(params: dict,
             stereo = stereo * scale
 
     # Short onset ramp: oscillators start at cos(phi) which is generally non-zero.
-    # A 3 ms linear ramp from 0 eliminates the click without affecting perceived attack.
-    n_onset = min(int(0.003 * sr), n // 10)
+    # Linear ramp from 0 eliminates the click without affecting perceived attack.
+    n_onset = min(int(onset_ms * 0.001 * sr), n // 10)
     if n_onset > 1:
         ramp = np.linspace(0.0, 1.0, n_onset, dtype=np.float32)
         stereo[:n_onset] *= ramp[:, np.newaxis]
 
     return stereo
-
-    # Reference amplitude (k=1)
-    A0_ref = next((p['A0'] for p in partials if p['A0'] and p['A0'] > 1e-10), 1.0)
-
-    midi = params.get('midi', 60)
-    n_str = n_strings_for_midi(midi)
-
-    # ── Harmonic sum with N_strings independent oscillators ──────────────────
-    for p in partials:
-        f_hz  = p['f_hz']
-        A0    = p['A0']
-        k     = p['k']
-
-        if A0 is None or A0 < 1e-10 or f_hz > sr / 2 * 0.99:
-            continue
-
-        amp_norm = A0 / A0_ref
-
-        # Bi-exponential decay envelope
-        tau1 = p.get('tau1') or 3.0
-        tau2 = p.get('tau2')
-        a1   = p.get('a1')
-        if a1 is None:
-            a1 = 1.0
-
-        if tau2 is not None and not p.get('mono', True):
-            env = a1 * np.exp(-t / tau1) + (1 - a1) * np.exp(-t / tau2)
-        else:
-            env = np.exp(-t / tau1)
-
-        # ── Multi-string oscillators ─────────────────────────────────────────
-        beat_hz = (p.get('beat_hz', 0.0) or 0.0) * beat_scale
-
-        if n_str == 1 or beat_hz < 0.05:
-            # Single oscillator
-            phi = rng.uniform(0, 2 * math.pi)
-            osc = np.cos(2 * math.pi * f_hz * t + phi)
-            audio += amp_norm * env * osc
-
-        elif n_str == 2:
-            # Two independent strings at f +/- beat_hz/2
-            # Beating emerges from their sum naturally (full-depth)
-            phi_a = rng.uniform(0, 2 * math.pi)
-            phi_b = rng.uniform(0, 2 * math.pi)  # independent phase -> random beat start
-
-            osc_a = np.cos(2 * math.pi * (f_hz + beat_hz / 2) * t + phi_a)
-            osc_b = np.cos(2 * math.pi * (f_hz - beat_hz / 2) * t + phi_b)
-            osc   = (osc_a + osc_b) * 0.5  # average: same energy as single osc
-
-            audio += amp_norm * env * osc
-
-        else:  # n_str == 3
-            # Three strings: f-delta, f, f+delta (symmetric spacing)
-            phi_a = rng.uniform(0, 2 * math.pi)
-            phi_b = rng.uniform(0, 2 * math.pi)  # center string
-            phi_c = rng.uniform(0, 2 * math.pi)
-
-            delta = beat_hz / 2  # spacing from center to outer strings
-            osc_a = np.cos(2 * math.pi * (f_hz - delta) * t + phi_a)  # string low
-            osc_b = np.cos(2 * math.pi * f_hz * t + phi_b)             # string center
-            osc_c = np.cos(2 * math.pi * (f_hz + delta) * t + phi_c)  # string high
-            osc   = (osc_a + osc_b + osc_c) / 3.0
-
-            audio += amp_norm * env * osc
-
-    # ── Noise (attack burst only — no persistent floor) ───────────────────────
-    # Persistent noise floor was causing audible high-frequency droning.
-    # Noise is now purely transient: strong at attack, decays with tau_noise.
-    noise_params = params.get('noise', {})
-    tau_noise = noise_params.get('attack_tau_s', 0.05) or 0.05
-    centroid  = noise_params.get('centroid_hz', 3000.0) or 3000.0
-    # Use extracted centroid directly -- encodes hammer brightness per MIDI.
-    # The 2000 Hz cap was killing the metallic attack ("cink") in treble.
-
-    noise_raw = rng.standard_normal(n_samples)
-
-    # First-order IIR low-pass at centroid_hz (capped at Nyquist safety margin)
-    alpha_lp = 1.0 - math.exp(-2 * math.pi * min(centroid, sr * 0.45) / sr)
-    noise_shaped = np.zeros_like(noise_raw)
-    y = 0.0
-    for i in range(n_samples):
-        y = alpha_lp * noise_raw[i] + (1 - alpha_lp) * y
-        noise_shaped[i] = y
-
-    # Pure attack envelope — no constant floor
-    noise_env    = np.exp(-t / max(tau_noise, 0.001))
-    noise_signal = noise_shaped * noise_env
-    noise_level  = 0.06  # 0.04 was too quiet; bright attack needs presence
-    audio       += noise_level * noise_signal
-
-    # ── Soundboard (parked) ───────────────────────────────────────────────────
-    if soundboard_strength > 0.005:
-        audio = apply_soundboard(audio, sr, soundboard_strength)
-
-    # ── Fade out ─────────────────────────────────────────────────────────────
-    if fade_out > 0 and duration > fade_out:
-        n_fade = int(fade_out * sr)
-        audio[-n_fade:] *= np.linspace(1.0, 0.0, n_fade)
-
-    # ── Normalize ─────────────────────────────────────────────────────────────
-    peak = np.abs(audio).max()
-    if peak > 1e-10:
-        audio = audio / peak * 0.9
-
-    return audio.astype(np.float32)
 
 
 # ── Convenience functions ─────────────────────────────────────────────────────
@@ -610,8 +510,14 @@ def synthesize_preview_set(params_path: str,
                            out_dir: str = 'analysis/synth_preview',
                            soundboard_strength: float = 0.0,
                            beat_scale: float = 1.0,
-                           duration: float = 5.0):
-    """Synthesize representative notes for listening evaluation."""
+                           duration: float = 5.0,
+                           target_rms: float = 0.06,
+                           vel_gamma: float = 0.7):
+    """Synthesize representative notes for listening evaluation.
+
+    Applies gamma velocity curve: rms = target_rms * ((vel+1)/8)^gamma
+    so velocity layers are correctly scaled relative to each other.
+    """
     notes = [
         (45, 2), (45, 5),  # A2 bichord
         (60, 2), (60, 5),  # C4 trichord
@@ -626,13 +532,16 @@ def synthesize_preview_set(params_path: str,
         key = f"m{midi:03d}_vel{vel}"
         if key not in data['samples']:
             continue
+        vel_rms = target_rms * ((vel + 1) / 8.0) ** vel_gamma
         audio = synthesize_note(data['samples'][key], duration=duration,
                                 soundboard_strength=soundboard_strength,
-                                beat_scale=beat_scale)
+                                beat_scale=beat_scale,
+                                target_rms=vel_rms)
         out = f'{out_dir}/{key}.wav'
         sf.write(out, audio, 44100, subtype='PCM_16')
         n_str = n_strings_for_midi(midi)
-        print(f"  {key} ({n_str}str) -> {out}")
+        rms_actual = float(__import__('numpy').sqrt(__import__('numpy').mean(audio**2)))
+        print(f"  {key} ({n_str}str)  vel_rms={vel_rms:.4f}  actual={rms_actual:.4f}  -> {out}")
     print(f"Preview written to {out_dir}/")
 
 

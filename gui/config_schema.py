@@ -78,6 +78,13 @@ PARAM_META = {
                "PARKED at 0: current 40-mode IR causes band-pass distortion "
                "('croaking'). Will be redesigned from measured IR."
     },
+    "noise_level": {
+        "default": 1.0, "min": 0.0, "max": 5.0, "step": 0.05,
+        "unit": "×", "group": "timbre",
+        "doc": "Global multiplier on NN-predicted attack noise amplitude per note. "
+               "0 = no attack noise. 1 = use NN-learned value. "
+               ">1 = louder hammer click. Affects transient brightness and impact."
+    },
 
     # ── Velocity color ────────────────────────────────────────────────────────
     "vel_color_blend": {
@@ -109,6 +116,23 @@ PARAM_META = {
         "doc": "M/S stereo width multiplier applied ON TOP of the per-note "
                "sample-derived width_factor. 1.0 = use derived factor only. "
                "2.0 = double the side channel. Effective side gain = width_factor × stereo_boost."
+    },
+    "stereo_decorr": {
+        "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.1,
+        "unit": "×", "group": "stereo",
+        "doc": "Multiplier on Schroeder all-pass stereo decorrelation strength. "
+               "0 = no decorrelation (identical L/R). 1 = natural (0.45 max at treble). "
+               "Decorrelation scales with MIDI register (bass=0, treble=max). "
+               "Creates natural L/R differences without changing spectral balance."
+    },
+
+    # ── Render ────────────────────────────────────────────────────────────────
+    "onset_ms": {
+        "default": 3.0, "min": 0.0, "max": 20.0, "step": 0.5,
+        "unit": "ms", "group": "render",
+        "doc": "Onset ramp duration in milliseconds. Fades in from 0 at t=0 to "
+               "avoid a click from the random initial oscillator phase. "
+               "3 ms is imperceptibly short but eliminates the click."
     },
 }
 

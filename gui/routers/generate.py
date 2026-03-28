@@ -132,6 +132,7 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
                     "duration", "sr", "soundboard_strength", "beat_scale",
                     "pan_spread", "eq_strength", "eq_freq_min", "stereo_boost",
                     "harmonic_brightness", "fade_out", "target_rms",
+                    "noise_level", "stereo_decorr", "onset_ms",
                 }
                 filtered = {k: v for k, v in kwargs.items() if k in allowed}
 
