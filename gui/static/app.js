@@ -523,16 +523,51 @@ function stopPolling() {
 // ── Session controls ─────────────────────────────────────────────────────────
 el('session-select').addEventListener('change', (e) => selectSession(e.target.value));
 
-el('btn-new-session').addEventListener('click', () => {
+el('btn-new-session').addEventListener('click', async () => {
   el('new-session-name').value = '';
   el('modal-error').classList.add('hidden');
+  el('new-session-params-custom-wrap').classList.add('hidden');
+
+  // Populate profile dropdown
+  const sel = el('new-session-params-select');
+  sel.innerHTML = '';
+  try {
+    const res = await fetch('/api/profile/list');
+    const data = await res.json();
+    (data.profiles || ['analysis/params.json']).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      const label = p.replace('analysis/', '');
+      opt.textContent = p.includes('profile') ? `${label}  ✓ trained` : label;
+      sel.appendChild(opt);
+    });
+  } catch {
+    const opt = document.createElement('option');
+    opt.value = 'analysis/params.json';
+    opt.textContent = 'analysis/params.json';
+    sel.appendChild(opt);
+  }
+  // Custom path option
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__';
+  customOpt.textContent = '— custom path…';
+  sel.appendChild(customOpt);
+
   el('modal-new-session').classList.remove('hidden');
   setTimeout(() => el('new-session-name').focus(), 50);
 });
 
+el('new-session-params-select').addEventListener('change', () => {
+  const isCustom = el('new-session-params-select').value === '__custom__';
+  el('new-session-params-custom-wrap').classList.toggle('hidden', !isCustom);
+});
+
 el('btn-create-session').addEventListener('click', async () => {
   const name = el('new-session-name').value.trim();
-  const params = el('new-session-params').value.trim();
+  const selVal = el('new-session-params-select').value;
+  const params = selVal === '__custom__'
+    ? el('new-session-params-custom').value.trim()
+    : selVal;
   if (!name) { showError('modal-error', 'Name is required'); return; }
   const instrument_meta = {
     instrumentName: el('new-inst-name').value.trim() || name,

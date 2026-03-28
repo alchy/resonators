@@ -121,6 +121,24 @@ def _run_train(req: TrainRequest):
         job["error"]  = str(e)
 
 
+@router.get("/profile/list")
+def list_profiles():
+    """Return available params JSON files: params.json + params_profile*.json."""
+    analysis_dir = Path("analysis")
+    files = []
+    # Raw extracted params
+    p = analysis_dir / "params.json"
+    if p.exists():
+        files.append(str(p).replace("\\", "/"))
+    # Trained/smoothed profiles only
+    for p in sorted(analysis_dir.glob("params_profile*.json")):
+        files.append(str(p).replace("\\", "/"))
+    p = analysis_dir / "params_smoothed.json"
+    if p.exists():
+        files.append(str(p).replace("\\", "/"))
+    return {"profiles": files}
+
+
 @router.post("/profile/train")
 def start_train(body: TrainRequest):
     if _job.get("status") in ("running", "loading", "saving"):

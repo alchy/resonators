@@ -23,7 +23,14 @@
   <div class="modal-box">
     <h2>New Session</h2>
     <label>Session name <input id="new-session-name" type="text" placeholder="grand_steinway"></label>
-    <label>Source params.json <input id="new-session-params" type="text" value="analysis/params.json"></label>
+    <label>Source params
+      <select id="new-session-params-select">
+        <option value="analysis/params.json">analysis/params.json  (raw extracted)</option>
+      </select>
+    </label>
+    <label id="new-session-params-custom-wrap" class="hidden">Custom path
+      <input id="new-session-params-custom" type="text" placeholder="analysis/params_profile_mybank.json">
+    </label>
     <label>Instrument name <input id="new-inst-name" type="text" placeholder="KS Grand Piano"></label>
     <label>Author <input id="new-inst-author" type="text" value="n/a"></label>
     <label>Category <input id="new-inst-category" type="text" value="Piano"></label>
