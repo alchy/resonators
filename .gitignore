@@ -29,3 +29,7 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# GUI sessions (generated audio + per-session params — not versioned)
+gui/sessions/
+gui/logs/
