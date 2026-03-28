@@ -33,3 +33,16 @@ Thumbs.db
 # GUI sessions (generated audio + per-session params — not versioned)
 gui/sessions/
 gui/logs/
+
+# Generated / temporary audio files
+analysis/listen/
+analysis/orig_*.wav
+analysis/*.wav
+analysis/extract_log.txt
+analysis/spectral_eq_log.txt
+analysis/params_*.json
+generated/*.wav
+
+# Claude internal
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
