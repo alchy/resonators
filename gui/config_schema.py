@@ -81,7 +81,7 @@ PARAM_META = {
 
     # ── Velocity color ────────────────────────────────────────────────────────
     "vel_color_blend": {
-        "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+        "default": 0.7, "min": 0.0, "max": 1.0, "step": 0.05,
         "unit": "", "group": "timbre",
         "doc": "Blend spectral color (A0 amplitude ratios) toward a reference velocity. "
                "0 = per-velocity shapes unchanged. 1 = all velocities get ref velocity's spectral shape. "
