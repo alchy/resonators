@@ -104,19 +104,25 @@ class InstrumentProfile(nn.Module):
     """
     Factorised network: separate sub-networks for vel-independent
     and vel-dependent parameters.
+
+    tau1_k1_net is dedicated to the fundamental (k=1) decay time which
+    determines perceived sustain. Trained separately from tau_net (all k)
+    to prevent the many short-tau high-k partials from biasing k=1 prediction.
     """
     def __init__(self, hidden: int = 64):
         super().__init__()
-        self.B_net   = mlp(MIDI_DIM, hidden, 1)           # log(B)
-        self.dur_net = mlp(MIDI_DIM, hidden, 1)           # log(dur)
-        self.tau_net = mlp(MIDI_DIM + K_DIM, hidden, 2)  # log(tau1), log(tau2)
-        self.A0_net  = mlp(MIDI_DIM + K_DIM + VEL_DIM, hidden, 1)  # log(A0_ratio)
-        self.df_net  = mlp(MIDI_DIM + K_DIM, hidden, 1)  # log(df+1)
-        self.eq_net  = mlp(MIDI_DIM + FREQ_DIM, hidden, 1)  # gain_db
-        self.wf_net  = mlp(MIDI_DIM, hidden, 1)           # log(width_factor)
+        self.B_net       = mlp(MIDI_DIM, hidden, 1)                    # log(B)
+        self.dur_net     = mlp(MIDI_DIM, hidden, 1)                    # log(dur)
+        self.tau1_k1_net = mlp(MIDI_DIM + VEL_DIM, hidden, 1)         # log(tau1) for k=1 only
+        self.tau_net     = mlp(MIDI_DIM + K_DIM, hidden, 2)           # log(tau1), log(tau2) for k>1
+        self.A0_net      = mlp(MIDI_DIM + K_DIM + VEL_DIM, hidden, 1) # log(A0_ratio)
+        self.df_net      = mlp(MIDI_DIM + K_DIM, hidden, 1)           # log(df+1)
+        self.eq_net      = mlp(MIDI_DIM + FREQ_DIM, hidden, 1)        # gain_db
+        self.wf_net      = mlp(MIDI_DIM, hidden, 1)                   # log(width_factor)
 
-    def forward_B(self, mf):         return self.B_net(mf)
-    def forward_dur(self, mf):       return self.dur_net(mf)
+    def forward_B(self, mf):            return self.B_net(mf)
+    def forward_dur(self, mf):          return self.dur_net(mf)
+    def forward_tau1_k1(self, mf, vf):  return self.tau1_k1_net(torch.cat([mf, vf], -1))
     def forward_tau(self, mf, kf):   return self.tau_net(torch.cat([mf, kf], -1))
     def forward_A0(self, mf, kf, vf): return self.A0_net(torch.cat([mf, kf, vf], -1))
     def forward_df(self, mf, kf):    return self.df_net(torch.cat([mf, kf], -1))
@@ -129,7 +135,7 @@ class InstrumentProfile(nn.Module):
 def build_dataset(samples: dict) -> dict:
     """Extract training tensors from raw params dict."""
     B_data, dur_data, wf_data = [], [], []
-    tau_data, A0_data, df_data, eq_data = [], [], [], []
+    tau_data, tau1_k1_data, A0_data, df_data, eq_data = [], [], [], [], []
 
     # Common EQ freq grid
     eq_freqs = None
@@ -187,6 +193,9 @@ def build_dataset(samples: dict) -> dict:
             if t1 > 0.005:
                 tau_data.append((mf, kf, math.log(t1),
                                  math.log(max(t2, 0.005)) if t2 > 0.005 else None))
+                # k=1 sustain: separate dedicated dataset
+                if k == 1:
+                    tau1_k1_data.append((mf, vf, math.log(t1)))
 
             # A0 ratio (k >= 1, normalised to k=1)
             a0 = p.get("A0") or 0
@@ -217,8 +226,9 @@ def build_dataset(samples: dict) -> dict:
     dur_data = iqr_filter_list(dur_data, 1)
     wf_data  = iqr_filter_list(wf_data,  1)
     # tau: filter on log(tau1) which is index 2
-    tau_data = iqr_filter_list(tau_data, 2)
-    A0_data  = iqr_filter_list(A0_data,  3)
+    tau_data      = iqr_filter_list(tau_data,      2)
+    tau1_k1_data  = iqr_filter_list(tau1_k1_data,  2)
+    A0_data       = iqr_filter_list(A0_data,        3)
     df_data  = iqr_filter_list(df_data,  2)
 
     # Pre-stack into batch tensors for fast training
@@ -236,6 +246,11 @@ def build_dataset(samples: dict) -> dict:
     if wf_data:
         batches["wf_mf"] = torch.stack([d[0] for d in wf_data])
         batches["wf_y"]  = torch.tensor([d[1] for d in wf_data], dtype=torch.float32)
+
+    if tau1_k1_data:
+        batches["tk1_mf"] = torch.stack([d[0] for d in tau1_k1_data])
+        batches["tk1_vf"] = torch.stack([d[1] for d in tau1_k1_data])
+        batches["tk1_y"]  = torch.tensor([d[2] for d in tau1_k1_data], dtype=torch.float32)
 
     if tau_data:
         batches["tau_mf"]  = torch.stack([d[0] for d in tau_data])
@@ -270,9 +285,8 @@ def build_dataset(samples: dict) -> dict:
 
     return dict(
         batches=batches, eq_freqs=eq_freqs,
-        # keep counts for logging
-        n_B=len(B_data), n_tau=len(tau_data), n_A0=len(A0_data),
-        n_df=len(df_data), n_eq=len(eq_sub) if eq_sub else 0,
+        n_B=len(B_data), n_tau=len(tau_data), n_tau1_k1=len(tau1_k1_data),
+        n_A0=len(A0_data), n_df=len(df_data), n_eq=len(eq_sub) if eq_sub else 0,
     )
 
 
@@ -300,6 +314,11 @@ def train(model: InstrumentProfile, ds: dict, epochs: int = 800,
         if "wf_mf" in b:
             pred = model.forward_wf(b["wf_mf"]).squeeze(-1)
             terms.append(nn.functional.mse_loss(pred, b["wf_y"]))
+
+        # k=1 sustain — dedicated network, high weight (2x)
+        if "tk1_mf" in b:
+            pred = model.forward_tau1_k1(b["tk1_mf"], b["tk1_vf"]).squeeze(-1)
+            terms.append(2.0 * nn.functional.mse_loss(pred, b["tk1_y"]))
 
         if "tau_mf" in b:
             pred = model.forward_tau(b["tau_mf"], b["tau_kf"])  # [N,2]
@@ -412,9 +431,13 @@ def generate_profile(
                     if f_k >= sr / 2:
                         break
 
-                    tau_pred = model.forward_tau(mf, kf)
-                    tau1 = float(torch.exp(tau_pred[0]).item())
-                    tau2 = float(torch.exp(tau_pred[1]).item())
+                    if k == 1:
+                        tau1 = float(torch.exp(model.forward_tau1_k1(mf, vf)).item())
+                        tau2 = float(torch.exp(model.forward_tau(mf, kf)[1]).item())
+                    else:
+                        tau_pred = model.forward_tau(mf, kf)
+                        tau1 = float(torch.exp(tau_pred[0]).item())
+                        tau2 = float(torch.exp(tau_pred[1]).item())
                     tau1 = max(tau1, 0.005)
                     tau2 = max(tau2, 0.005)
                     if tau2 >= tau1:
@@ -488,8 +511,8 @@ def main():
 
     print("Building dataset ...")
     ds = build_dataset(samples)
-    print(f"  B={ds['n_B']}  tau={ds['n_tau']}  A0={ds['n_A0']}  "
-          f"df={ds['n_df']}  eq={ds['n_eq']}")
+    print(f"  B={ds['n_B']}  tau={ds['n_tau']}  tau1_k1={ds['n_tau1_k1']}  "
+          f"A0={ds['n_A0']}  df={ds['n_df']}  eq={ds['n_eq']}")
 
     model = InstrumentProfile(hidden=args.hidden)
     n_params = sum(p.numel() for p in model.parameters())
