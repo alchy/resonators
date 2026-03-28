@@ -79,6 +79,22 @@ PARAM_META = {
                "('croaking'). Will be redesigned from measured IR."
     },
 
+    # ── Velocity color ────────────────────────────────────────────────────────
+    "vel_color_blend": {
+        "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+        "unit": "", "group": "timbre",
+        "doc": "Blend spectral color (A0 amplitude ratios) toward a reference velocity. "
+               "0 = per-velocity shapes unchanged. 1 = all velocities get ref velocity's spectral shape. "
+               "Preserves total energy per velocity. Recommended: 0.3–0.5."
+    },
+    "vel_color_ref": {
+        "default": 4, "min": 0, "max": 7, "step": 1,
+        "unit": "vel", "group": "timbre",
+        "doc": "Reference velocity for color blending (0–7). vel4 is the sweet spot: "
+               "strong enough signal for reliable extraction, not so loud that the hammer "
+               "contact time shifts spectral balance."
+    },
+
     # ── Stereo ────────────────────────────────────────────────────────────────
     "pan_spread": {
         "default": 0.55, "min": 0.0, "max": 1.5, "step": 0.05,

@@ -5,12 +5,14 @@ Generation endpoints: trigger synthesis for a range of notes/velocities.
 Jobs run in a background thread; status polled via GET .../generate/status.
 """
 
+import copy
 import json
 import threading
 import time
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import soundfile as sf
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -25,6 +27,42 @@ router = APIRouter()
 
 # In-memory job registry (one job per session at a time)
 _jobs: dict[str, dict] = {}
+
+
+def _apply_color_blend(sample: dict, ref_sample: dict, blend: float) -> dict:
+    """
+    Blend sample's A0 amplitude ratios toward ref_sample's, preserving total energy.
+    Returns a (possibly new) sample dict.
+    """
+    if blend <= 0.0 or ref_sample is None:
+        return sample
+
+    part_map = {p["k"]: p for p in sample.get("partials", []) if "k" in p}
+    ref_map  = {p["k"]: p for p in ref_sample.get("partials", []) if "k" in p}
+    all_k = sorted(set(part_map) & set(ref_map))
+    if not all_k:
+        return sample
+
+    a0_vec  = np.array([part_map[k].get("A0", 0.0) or 0.0 for k in all_k])
+    ref_vec = np.array([ref_map[k].get("A0",  0.0) or 0.0 for k in all_k])
+
+    total_e  = np.linalg.norm(a0_vec)
+    ref_norm = np.linalg.norm(ref_vec)
+    if total_e < 1e-9 or ref_norm < 1e-9:
+        return sample
+
+    vel_shape = a0_vec / total_e
+    ref_shape = ref_vec / ref_norm
+    blended   = (1.0 - blend) * vel_shape + blend * ref_shape
+    blended  /= max(np.linalg.norm(blended), 1e-9)
+    new_a0    = blended * total_e
+
+    sample = copy.deepcopy(sample)
+    pm = {p["k"]: p for p in sample.get("partials", []) if "k" in p}
+    for i, k in enumerate(all_k):
+        if k in pm and new_a0[i] > 0:
+            pm[k]["A0"] = float(new_a0[i])
+    return sample
 
 
 def _load_params(cfg: dict, name: str) -> dict:
@@ -61,10 +99,17 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
             try:
                 kwargs = resolve_note_params(cfg, midi)
                 tau_scale = kwargs.pop("_tau1_k1_scale", 1.0)
+                color_blend = kwargs.pop("vel_color_blend", 0.0) or 0.0
+                color_ref   = int(kwargs.pop("vel_color_ref", 4) or 4)
 
-                # Apply tau1_k1_scale to k=1 partial in a copy of sample
+                # Apply spectral color blending toward reference velocity
+                if color_blend > 0.0:
+                    ref_key    = f"m{midi:03d}_vel{color_ref}"
+                    ref_sample = params_data["samples"].get(ref_key)
+                    sample = _apply_color_blend(sample, ref_sample, color_blend)
+
+                # Apply tau1_k1_scale to k=1 partial
                 if tau_scale != 1.0:
-                    import copy
                     sample = copy.deepcopy(sample)
                     for p in sample.get("partials", []):
                         if p.get("k") == 1:
@@ -90,6 +135,8 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
                 }
                 filtered = {k: v for k, v in kwargs.items() if k in allowed}
 
+                # Deterministic seed: same note/vel always produces identical stereo field
+                filtered["rng_seed"] = midi * 100 + vel
                 audio = synthesize_note(sample, **filtered)
                 sr_val = int(filtered.get("sr", 44100))
                 sr_code = 48 if sr_val >= 48000 else 44
