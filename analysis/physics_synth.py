@@ -510,8 +510,14 @@ def synthesize_preview_set(params_path: str,
                            out_dir: str = 'analysis/synth_preview',
                            soundboard_strength: float = 0.0,
                            beat_scale: float = 1.0,
-                           duration: float = 5.0):
-    """Synthesize representative notes for listening evaluation."""
+                           duration: float = 5.0,
+                           target_rms: float = 0.06,
+                           vel_gamma: float = 0.7):
+    """Synthesize representative notes for listening evaluation.
+
+    Applies gamma velocity curve: rms = target_rms * ((vel+1)/8)^gamma
+    so velocity layers are correctly scaled relative to each other.
+    """
     notes = [
         (45, 2), (45, 5),  # A2 bichord
         (60, 2), (60, 5),  # C4 trichord
@@ -526,13 +532,16 @@ def synthesize_preview_set(params_path: str,
         key = f"m{midi:03d}_vel{vel}"
         if key not in data['samples']:
             continue
+        vel_rms = target_rms * ((vel + 1) / 8.0) ** vel_gamma
         audio = synthesize_note(data['samples'][key], duration=duration,
                                 soundboard_strength=soundboard_strength,
-                                beat_scale=beat_scale)
+                                beat_scale=beat_scale,
+                                target_rms=vel_rms)
         out = f'{out_dir}/{key}.wav'
         sf.write(out, audio, 44100, subtype='PCM_16')
         n_str = n_strings_for_midi(midi)
-        print(f"  {key} ({n_str}str) -> {out}")
+        rms_actual = float(__import__('numpy').sqrt(__import__('numpy').mean(audio**2)))
+        print(f"  {key} ({n_str}str)  vel_rms={vel_rms:.4f}  actual={rms_actual:.4f}  -> {out}")
     print(f"Preview written to {out_dir}/")
 
 
