@@ -121,12 +121,20 @@ def apply_soundboard(audio: np.ndarray, sr: int, strength: float) -> np.ndarray:
     return audio + strength * wet
 
 
+# ── Panning helper ───────────────────────────────────────────────────────────
+
+def _pan_gains(angle: float) -> tuple:
+    """Constant-power stereo pan. angle=pi/4 is center (equal L and R)."""
+    return math.cos(angle), math.sin(angle)
+
+
 # ── Core synthesis ────────────────────────────────────────────────────────────
 
 def synthesize_note(params: dict, duration: float = None,
                     sr: int = 44100,
                     soundboard_strength: float = 0.0,
                     beat_scale: float = 1.0,
+                    pan_spread: float = 0.55,
                     fade_out: float = 0.5,
                     rng_seed: int = None) -> np.ndarray:
     """
