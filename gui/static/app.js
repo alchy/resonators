@@ -331,7 +331,7 @@ function initVelCheckboxes() {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.value = v;
-    cb.checked = v === 3;
+    cb.checked = v === 4;
     cb.id = `vel-${v}`;
     // Uncheck "All" if individual is deselected
     cb.addEventListener('change', () => {
