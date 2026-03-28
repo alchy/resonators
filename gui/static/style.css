@@ -58,15 +58,16 @@ header {
   background: var(--panel-light);
   border-bottom: 2px solid var(--panel-border);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: stretch;
   padding: 6px 14px 5px;
   flex-shrink: 0;
-  gap: 5px;
+  gap: 12px;
 }
 
-/* Two-line LCD display — full width */
+/* Two-line LCD display — left half */
 .header-lcd {
-  width: 100%;
+  flex: 0 0 50%;
   background-color: var(--lcd-bg);
   background-image: var(--lcd-grid-h), var(--lcd-grid-v);
   border: 2px solid var(--lcd-text);
@@ -74,6 +75,9 @@ header {
   padding: 3px 10px;
   box-shadow: inset 0 0 8px rgba(0,0,0,0.3);
   user-select: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .lcd-line {
@@ -104,9 +108,24 @@ header {
 }
 
 .session-bar {
+  flex: 1;
   display: flex;
-  gap: 0.5rem;
-  align-items: center;
+  flex-direction: column;
+  gap: 0.4rem;
+  justify-content: center;
+}
+
+.session-bar select {
+  width: 100%;
+}
+
+.session-bar .session-btns {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.session-bar .session-btns button {
+  flex: 1;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
