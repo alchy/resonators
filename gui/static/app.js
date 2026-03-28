@@ -67,12 +67,14 @@ async function selectSession(name) {
     state.session = null;
     el('main-panel').classList.add('hidden');
     el('btn-delete-session').disabled = true;
+    el('train-out').value = 'analysis/params_profile.json';
     stopPolling();
     return;
   }
   state.session = name;
   el('btn-delete-session').disabled = false;
   el('main-panel').classList.remove('hidden');
+  el('train-out').value = `analysis/params_profile_${name}.json`;
   await reloadConfig();
   await loadFiles();
   startPolling();
