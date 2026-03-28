@@ -14,6 +14,7 @@
   <div class="header-lcd">
     <div class="lcd-line lcd-line-1">ITHACA RESONATOR SYNTH</div>
     <div class="lcd-line lcd-line-2">PATCH NAME: <span id="lcd-patch-name">— NO SESSION —</span></div>
+    <div class="lcd-line lcd-line-3">&#9654; <span id="lcd-playing">—</span></div>
   </div>
   <div class="session-bar">
     <select id="session-select"><option value="">— select session —</option></select>
@@ -168,7 +169,6 @@
   <!-- Col 6: PLAYER + SPECTRUM + GENERATED FILES ───────────────────────────── -->
   <section class="panel panel-audio">
     <div class="panel-title">PLAYER</div>
-    <div id="player-filename" class="player-filename">—</div>
     <audio id="audio-player" controls></audio>
 
     <div class="panel-title" style="margin-top:0.75rem">SPECTRUM</div>

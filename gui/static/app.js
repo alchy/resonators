@@ -529,7 +529,7 @@ async function loadFiles() {
 
 function playFile(f) {
   state.currentFile = f.filename;
-  el('player-filename').textContent = f.filename;
+  el('lcd-playing').textContent = f.filename;
   const player = el('audio-player');
   player.src = f.url;
   player.play();

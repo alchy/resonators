@@ -107,6 +107,13 @@ header {
   font-size: 18px;
 }
 
+.lcd-line-3 {
+  font-size: 13px;
+  letter-spacing: 1px;
+  opacity: 0.65;
+  margin-top: 2px;
+}
+
 .session-bar {
   flex: 1;
   display: flex;
