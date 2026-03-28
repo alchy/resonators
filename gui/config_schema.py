@@ -28,7 +28,15 @@ PARAM_META = {
     "target_rms": {
         "default": 0.06, "min": 0.01, "max": 0.25, "step": 0.005,
         "unit": "", "group": "render",
-        "doc": "Output RMS level (linear 0–1). Controls loudness. 0.06 ≈ -24 dBFS."
+        "doc": "Output RMS level for velocity 7 (loudest layer). Lower velocities are scaled down by the velocity curve. 0.06 ≈ -24 dBFS."
+    },
+    "velocity_curve_gamma": {
+        "default": 0.7, "min": 0.2, "max": 2.0, "step": 0.05,
+        "unit": "", "group": "render",
+        "doc": "Velocity curve exponent: rms = target_rms × ((vel+1)/8)^gamma. "
+               "gamma=1.0: linear (vel 0 = 12.5% of vel 7). "
+               "gamma=0.5: square-root (vel 0 = 35% of vel 7, more natural). "
+               "gamma=0.7: default, good piano feel."
     },
 
     # ── Timbre ────────────────────────────────────────────────────────────────
@@ -110,6 +118,11 @@ def midi_to_name(midi: int) -> str:
     return f"{name}{octave}"
 
 
+def default_velocity_profile(gamma: float = 0.7) -> dict:
+    """Default velocity RMS ratios derived from gamma power curve."""
+    return {str(v): round(((v + 1) / 8.0) ** gamma, 4) for v in range(8)}
+
+
 def default_config(source_params: str = "analysis/params.json") -> dict:
     """Return a fresh session config with all defaults."""
     cfg = {
@@ -118,6 +131,7 @@ def default_config(source_params: str = "analysis/params.json") -> dict:
         "timbre": {},
         "stereo": {},
         "per_note": {},
+        "velocity_rms_profile": default_velocity_profile(),
     }
     for key, meta in PARAM_META.items():
         cfg[meta["group"]][key] = meta["default"]

@@ -70,6 +70,18 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
                         if p.get("k") == 1:
                             p["tau1"] = (p.get("tau1") or 3.0) * tau_scale
 
+                # Velocity scaling: use sample-derived profile if available,
+                # otherwise fall back to gamma power curve.
+                gamma = kwargs.pop("velocity_curve_gamma", 0.7)
+                base_rms = kwargs.get("target_rms", 0.06) or 0.06
+                vel_profile = cfg.get("velocity_rms_profile", {})
+                if vel_profile and str(vel) in vel_profile:
+                    vel_ratio = float(vel_profile[str(vel)])
+                else:
+                    vel_fraction = (vel + 1) / 8.0
+                    vel_ratio = vel_fraction ** gamma
+                kwargs["target_rms"] = float(base_rms * vel_ratio)
+
                 # Remove keys not accepted by synthesize_note
                 allowed = {
                     "duration", "sr", "soundboard_strength", "beat_scale",

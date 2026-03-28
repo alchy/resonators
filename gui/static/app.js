@@ -21,7 +21,14 @@ async function apiFetch(path, opts = {}) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || res.statusText);
+    const detail = err.detail;
+    // FastAPI validation errors return detail as an array of objects
+    const msg = typeof detail === 'string'
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map(d => `${d.loc?.join('.')}: ${d.msg}`).join('; ')
+        : JSON.stringify(detail) || res.statusText;
+    throw new Error(`${res.status} ${msg}`);
   }
   return res.json();
 }
@@ -71,6 +78,42 @@ async function selectSession(name) {
   startPolling();
 }
 
+// ── Velocity profile sliders ──────────────────────────────────────────────────
+function renderVelProfileSliders() {
+  const profile = state.config.velocity_rms_profile;
+  const container = el('vel-profile-sliders');
+  container.innerHTML = '';
+
+  for (let v = 0; v <= 7; v++) {
+    const ratio = parseFloat(profile[String(v)]);
+    const row = document.createElement('div');
+    row.className = 'slider-row';
+
+    const lbl = document.createElement('label');
+    lbl.textContent = `vel ${v}`;
+    lbl.title = `Velocity ${v} loudness ratio relative to vel 7 (1.0). Derived from original sample RMS or editable manually.`;
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = 0.02; slider.max = 1.0; slider.step = 0.01;
+    slider.value = ratio;
+
+    const valSpan = document.createElement('span');
+    valSpan.className = 'slider-val';
+    valSpan.textContent = ratio.toFixed(3);
+
+    slider.addEventListener('input', () => {
+      const val = parseFloat(slider.value);
+      valSpan.textContent = val.toFixed(3);
+      if (!state.config.velocity_rms_profile) state.config.velocity_rms_profile = {};
+      state.config.velocity_rms_profile[String(v)] = val;
+    });
+
+    row.appendChild(lbl); row.appendChild(slider); row.appendChild(valSpan);
+    container.appendChild(row);
+  }
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 async function reloadConfig() {
   const data = await apiFetch(`/${state.session}/config`);
@@ -78,6 +121,7 @@ async function reloadConfig() {
   state.paramMeta = data.param_meta;
   state.perNoteDeltaMeta = data.per_note_delta_meta;
   renderGlobalSliders();
+  renderVelProfileSliders();
 }
 
 function renderGlobalSliders() {
@@ -234,8 +278,8 @@ el('btn-save-params').addEventListener('click', async () => {
     render: state.config.render,
     timbre: state.config.timbre,
     stereo: state.config.stereo,
+    velocity_rms_profile: state.config.velocity_rms_profile,
   };
-  // Save per-note overrides too
   if (Object.keys(state.currentNoteOverrides).length > 0) {
     payload.per_note = { [state.currentMidi]: state.currentNoteOverrides };
   }
@@ -255,6 +299,30 @@ el('btn-save-params').addEventListener('click', async () => {
 function initVelCheckboxes() {
   const wrap = el('vel-checkboxes');
   wrap.innerHTML = '';
+
+  // "All" toggle
+  const allLbl = document.createElement('label');
+  allLbl.className = 'vel-check vel-check-all';
+  const allCb = document.createElement('input');
+  allCb.type = 'checkbox';
+  allCb.id = 'vel-all';
+  allCb.checked = false;
+  allCb.addEventListener('change', () => {
+    wrap.querySelectorAll('input[type="checkbox"]:not(#vel-all)')
+      .forEach(cb => { cb.checked = allCb.checked; });
+  });
+  const allSpan = document.createElement('span');
+  allSpan.textContent = 'All';
+  allLbl.appendChild(allCb);
+  allLbl.appendChild(allSpan);
+  wrap.appendChild(allLbl);
+
+  // Divider
+  const sep = document.createElement('span');
+  sep.className = 'vel-sep';
+  sep.textContent = '|';
+  wrap.appendChild(sep);
+
   for (let v = 0; v <= 7; v++) {
     const lbl = document.createElement('label');
     lbl.className = 'vel-check';
@@ -263,6 +331,11 @@ function initVelCheckboxes() {
     cb.value = v;
     cb.checked = v === 3;
     cb.id = `vel-${v}`;
+    // Uncheck "All" if individual is deselected
+    cb.addEventListener('change', () => {
+      const all = wrap.querySelectorAll('input[type="checkbox"]:not(#vel-all)');
+      allCb.checked = Array.from(all).every(c => c.checked);
+    });
     const span = document.createElement('span');
     span.textContent = v;
     lbl.appendChild(cb);
@@ -272,20 +345,28 @@ function initVelCheckboxes() {
 }
 
 function selectedVelocities() {
-  return Array.from(document.querySelectorAll('#vel-checkboxes input:checked'))
-    .map(cb => parseInt(cb.value));
+  return Array.from(document.querySelectorAll('#vel-checkboxes input[type="checkbox"]:not(#vel-all):checked'))
+    .map(cb => parseInt(cb.value, 10));
 }
 
 // ── Generate ─────────────────────────────────────────────────────────────────
 el('btn-generate').addEventListener('click', async () => {
   if (!state.session) return;
-  // Save params first
-  const payload = {
-    render: state.config.render,
-    timbre: state.config.timbre,
-    stereo: state.config.stereo,
-  };
-  await apiFetch(`/${state.session}/config`, { method: 'PUT', body: JSON.stringify(payload) });
+  // Save current params before generating
+  try {
+    await apiFetch(`/${state.session}/config`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        render: state.config.render,
+        timbre: state.config.timbre,
+        stereo: state.config.stereo,
+        velocity_rms_profile: state.config.velocity_rms_profile,
+      }),
+    });
+  } catch (e) {
+    el('gen-status').textContent = 'Config save error: ' + e.message;
+    return;
+  }
 
   const body = {
     midi_from: parseInt(el('gen-from').value),
@@ -385,30 +466,33 @@ function drawSpectrum(freqs, db) {
   const H = canvas.height;
 
   ctx.clearRect(0, 0, W, H);
-
-  // Background
-  ctx.fillStyle = '#161616';
+  ctx.fillStyle = '#001200';
   ctx.fillRect(0, 0, W, H);
 
-  // Grid lines (dB)
-  ctx.strokeStyle = '#2a2a2a';
+  // Auto-scale: peak snapped to nearest 10 dB above, floor -80
+  const dbPeak = Math.max(...db);
+  const dbMax = Math.ceil(dbPeak / 10) * 10;
+  const dbMin = -80;
+  const dbRange = dbMax - dbMin;
+
+  // Grid lines every 10 dB
   ctx.lineWidth = 1;
-  const dbMin = -80, dbMax = 0;
-  for (let d = dbMin; d <= dbMax; d += 20) {
-    const y = H - ((d - dbMin) / (dbMax - dbMin)) * H;
+  for (let d = dbMin; d <= dbMax; d += 10) {
+    const y = H - ((d - dbMin) / dbRange) * H;
+    ctx.strokeStyle = d === 0 ? '#1a5a1a' : '#0a2a0a';
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-    ctx.fillStyle = '#404040';
+    ctx.fillStyle = d % 20 === 0 ? '#00aa44aa' : '#006622aa';
     ctx.font = '9px monospace';
     ctx.fillText(d + 'dB', 2, y - 2);
   }
 
-  // Spectrum
-  const nPts = freqs.length;
-  const dbRange = dbMax - dbMin;
-
+  // Spectrum curve
+  const nPts = db.length;
   ctx.beginPath();
-  ctx.strokeStyle = '#c8a84b';
+  ctx.strokeStyle = '#00ff77';
   ctx.lineWidth = 1.5;
+  ctx.shadowColor = '#00ff7788';
+  ctx.shadowBlur = 4;
 
   for (let i = 0; i < nPts; i++) {
     const x = (i / (nPts - 1)) * W;
@@ -417,10 +501,11 @@ function drawSpectrum(freqs, db) {
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+  ctx.shadowBlur = 0;
 
   // Fill under curve
   ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
-  ctx.fillStyle = 'rgba(200, 168, 75, 0.08)';
+  ctx.fillStyle = 'rgba(0, 255, 119, 0.06)';
   ctx.fill();
 }
 
@@ -467,6 +552,24 @@ el('btn-delete-session').addEventListener('click', async () => {
   await apiFetch(`/${state.session}`, { method: 'DELETE' });
   await loadSessions();
   await selectSession('');
+});
+
+// ── Velocity profile ──────────────────────────────────────────────────────────
+el('btn-vel-profile').addEventListener('click', async () => {
+  if (!state.session) return;
+  const bankDir = el('bank-dir').value.trim();
+  el('vel-profile-status').textContent = 'Computing velocity profile from original WAVs…';
+  try {
+    const data = await apiFetch(`/${state.session}/velocity_profile`, {
+      method: 'POST',
+      body: JSON.stringify({ bank_dir: bankDir }),
+    });
+    const p = data.velocity_rms_profile;
+    const summary = Object.entries(p).map(([v, r]) => `v${v}=${r}`).join('  ');
+    el('vel-profile-status').textContent = `✓ ${data.n_samples_measured} files measured · ${summary}`;
+  } catch (e) {
+    el('vel-profile-status').textContent = 'Error: ' + e.message;
+  }
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
