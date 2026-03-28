@@ -510,9 +510,15 @@ def analyze_file(path: str, midi: int, vel: int, verbose: bool = False) -> dict:
     if not peaks:
         return result
 
-    # Compute STFT once for all partials (efficient)
-    hop_env = 2048
-    frame_env = 8192
+    # Frequency-adaptive STFT: frame scales to ~20 bins per harmonic spacing (f0).
+    # Bass notes need larger frame for frequency resolution (prevent k=1/k=2 bleed).
+    # Treble notes benefit from smaller frame (better time resolution for fast decays).
+    # Frame is rounded to next power of 2, clamped to [2048, 32768].
+    TARGET_BINS_PER_HARMONIC = 20
+    raw_frame = int(TARGET_BINS_PER_HARMONIC * sr / f0_nominal)
+    frame_exp = max(11, min(15, round(math.log2(raw_frame))))  # 2048..32768
+    frame_env = 1 << frame_exp
+    hop_env   = frame_env // 4
     stft_times, stft_freqs, stft_mag = compute_stft(audio, sr, hop=hop_env, frame=frame_env)
 
     partials_out = []
