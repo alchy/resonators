@@ -807,6 +807,8 @@ def main():
     parser.add_argument('--midi', type=int, default=None)
     parser.add_argument('--vel', type=int, default=None)
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--workers', type=int, default=None,
+                        help='Number of parallel workers (default: cpu_count-1, 1=serial)')
     args = parser.parse_args()
 
     if args.plot:
@@ -817,7 +819,8 @@ def main():
         analyze_bank(args.bank, args.out,
                      verbose=args.verbose,
                      midi_filter=args.midi,
-                     vel_filter=args.vel)
+                     vel_filter=args.vel,
+                     n_workers=args.workers)
 
 
 if __name__ == '__main__':
