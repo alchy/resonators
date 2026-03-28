@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div class="rack-module">
 
 <!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <header>
@@ -47,40 +48,46 @@
 <!-- ── Main layout ──────────────────────────────────────────────────────────── -->
 <main class="hidden" id="main-panel">
 
-  <!-- Left: params ──────────────────────────────────────────────────────────── -->
-  <section class="panel panel-params">
-    <div class="panel-title">PARAMETERS</div>
+  <!-- Col 1: RENDER ────────────────────────────────────────────────────────── -->
+  <section class="panel panel-params" id="panel-render">
+    <div class="section-title">RENDER</div>
+    <div class="moog-section">
+      <div class="knobs-row" id="sliders-render"></div>
+    </div>
+  </section>
 
-    <!-- Global groups -->
-    <div class="param-group" id="group-render">
-      <div class="group-label">RENDER</div>
-      <div id="sliders-render"></div>
+  <!-- Col 2: TIMBRE ────────────────────────────────────────────────────────── -->
+  <section class="panel panel-params" id="panel-timbre">
+    <div class="section-title">TIMBRE</div>
+    <div class="moog-section">
+      <div class="knobs-row" id="sliders-timbre"></div>
     </div>
-    <div class="param-group" id="group-timbre">
-      <div class="group-label">TIMBRE</div>
-      <div id="sliders-timbre"></div>
-    </div>
-    <div class="param-group" id="group-stereo">
-      <div class="group-label">STEREO</div>
-      <div id="sliders-stereo"></div>
-    </div>
+  </section>
 
-    <!-- Per-note overrides -->
-    <div class="param-group">
-      <div class="group-label">PER-NOTE OVERRIDE</div>
-      <div class="note-picker">
-        <label>MIDI <input id="note-midi" type="number" min="21" max="108" value="45"></label>
-        <span id="note-name-display" class="note-name">A2</span>
-        <button id="btn-load-note">Load</button>
-        <button id="btn-clear-note" class="danger">Clear</button>
-      </div>
-      <div id="sliders-per-note"></div>
+  <!-- Col 3: STEREO ────────────────────────────────────────────────────────── -->
+  <section class="panel panel-params" id="panel-stereo">
+    <div class="section-title">STEREO</div>
+    <div class="moog-section">
+      <div class="knobs-row" id="sliders-stereo"></div>
     </div>
+  </section>
 
+  <!-- Col 4: PER-NOTE ──────────────────────────────────────────────────────── -->
+  <section class="panel panel-params" id="panel-per-note">
+    <div class="section-title">PER-NOTE</div>
+    <div class="note-picker">
+      <label>MIDI <input id="note-midi" type="number" min="21" max="108" value="45"></label>
+      <span id="note-name-display" class="note-name">A2</span>
+      <button id="btn-load-note">Load</button>
+      <button id="btn-clear-note" class="danger">Clear</button>
+    </div>
+    <div class="moog-section" style="flex-grow:1">
+      <div class="knobs-row" id="sliders-per-note"></div>
+    </div>
     <button id="btn-save-params" class="primary full-width">Save Parameters</button>
   </section>
 
-  <!-- Center: generate ──────────────────────────────────────────────────────── -->
+  <!-- Col 5: GENERATE ──────────────────────────────────────────────────────── -->
   <section class="panel panel-generate">
     <div class="panel-title">GENERATE</div>
 
@@ -96,37 +103,36 @@
     </div>
 
     <div class="gen-actions">
-      <button id="btn-generate" class="primary">▶ Generate</button>
-      <button id="btn-cancel" class="danger hidden">■ Cancel</button>
+      <button id="btn-generate" class="primary">&#9654; Generate</button>
+      <button id="btn-cancel" class="danger hidden">&#9632; Cancel</button>
     </div>
 
-    <div class="panel-title" style="margin-top:0.75rem">INSTRUMENT VELOCITY PROFILE</div>
-    <div class="param-group">
-      <div class="group-label">RMS RATIO PER VELOCITY (vel 7 = 1.0)</div>
+    <div class="panel-title" style="margin-top:0.5rem">VELOCITY PROFILE</div>
+    <div class="moog-section" style="padding:6px">
+      <div style="font-size:8px;letter-spacing:2px;color:rgba(255,255,255,0.45);margin-bottom:4px">RMS RATIO PER VELOCITY (vel 7 = 1.0)</div>
       <div id="vel-profile-sliders"></div>
-      <div class="vel-profile-row" style="margin-top:6px">
+      <div class="vel-profile-row">
         <input id="bank-dir" type="text" value="C:/SoundBanks/IthacaPlayer/ks-grand" style="flex:1;font-size:10px">
-        <button id="btn-vel-profile" title="Compute from original WAV files">⟳ From samples</button>
+        <button id="btn-vel-profile" title="Compute from original WAV files">&#10227; From samples</button>
       </div>
       <div id="vel-profile-status" class="status-line"></div>
     </div>
 
-    <div class="panel-title" style="margin-top:0.75rem">TRAIN DDSP PROFILE</div>
-    <div class="param-group">
-      <div class="group-label">LEARN PARAMS DIRECTLY FROM WAV FILES</div>
+    <div class="panel-title" style="margin-top:0.5rem">TRAIN DDSP PROFILE</div>
+    <div class="moog-section" style="padding:6px">
       <div class="train-row">
         <input id="train-wav-dir" type="text" value="C:/SoundBanks/IthacaPlayer/ks-grand" style="flex:1;font-size:10px">
       </div>
       <div class="train-row" style="margin-top:4px">
-        <label style="font-size:10px">Output <input id="train-out" type="text" value="analysis/params_profile.json" style="width:180px;font-size:10px"></label>
+        <label style="font-size:10px">Output <input id="train-out" type="text" value="analysis/params_profile.json" style="width:170px;font-size:10px"></label>
       </div>
       <div class="train-row" style="margin-top:4px;gap:8px">
-        <label style="font-size:10px">Epochs <input id="train-epochs" type="number" value="300" min="10" max="2000" style="width:55px"></label>
-        <label style="font-size:10px">K-max  <input id="train-kmax"   type="number" value="16"  min="4"  max="32"   style="width:45px"></label>
-        <label style="font-size:10px">Seg(s) <input id="train-seg"    type="number" value="0.5" min="0.2" max="3" step="0.1" style="width:45px"></label>
+        <label style="font-size:10px">Epochs <input id="train-epochs" type="number" value="300" min="10" max="2000" style="width:52px"></label>
+        <label style="font-size:10px">K-max  <input id="train-kmax"   type="number" value="16"  min="4"  max="32"   style="width:42px"></label>
+        <label style="font-size:10px">Seg(s) <input id="train-seg"    type="number" value="0.5" min="0.2" max="3" step="0.1" style="width:42px"></label>
       </div>
       <div class="train-row" style="margin-top:4px;gap:12px">
-        <label style="font-size:10px"><input type="checkbox" id="train-preserve-orig"> Preserve originals (only fill missing)</label>
+        <label style="font-size:10px"><input type="checkbox" id="train-preserve-orig"> Preserve originals</label>
         <label style="font-size:10px">Init from
           <select id="train-init" style="font-size:10px">
             <option value="">— random —</option>
@@ -134,9 +140,9 @@
         </label>
       </div>
       <div class="train-actions" style="margin-top:6px">
-        <button id="btn-train-ddsp" class="primary">▶ Train DDSP</button>
-        <button id="btn-train-cancel" class="danger hidden">■ Cancel</button>
-        <button id="btn-train-apply" class="hidden" style="background:#1a4a1a;border-color:#00cc44">⟶ Apply to session</button>
+        <button id="btn-train-ddsp" class="primary">&#9654; Train DDSP</button>
+        <button id="btn-train-cancel" class="danger hidden">&#9632; Cancel</button>
+        <button id="btn-train-apply" class="hidden" style="border-color:#00dd44;color:#00dd44">&#10230; Apply</button>
       </div>
       <div class="progress-bar hidden" id="train-progress-wrap">
         <div class="progress-track"><div id="train-progress-fill" style="width:0%"></div></div>
@@ -152,19 +158,18 @@
     </div>
     <div id="gen-status" class="status-line"></div>
 
-    <!-- File list -->
-    <div class="panel-title" style="margin-top:1rem">GENERATED FILES</div>
+    <div class="panel-title" style="margin-top:0.5rem">GENERATED FILES</div>
     <div id="file-list" class="file-list"></div>
   </section>
 
-  <!-- Right: player + spectrum ───────────────────────────────────────────────── -->
+  <!-- Col 6: PLAYER + SPECTRUM ─────────────────────────────────────────────── -->
   <section class="panel panel-audio">
     <div class="panel-title">PLAYER</div>
     <div id="player-filename" class="player-filename">—</div>
     <audio id="audio-player" controls></audio>
 
-    <div class="panel-title" style="margin-top:1rem">SPECTRUM</div>
-    <canvas id="spectrum-canvas" width="420" height="200"></canvas>
+    <div class="panel-title" style="margin-top:0.75rem">SPECTRUM</div>
+    <canvas id="spectrum-canvas" width="400" height="180"></canvas>
     <div class="spectrum-labels">
       <span>20 Hz</span><span>200</span><span>2k</span><span>20k Hz</span>
     </div>
@@ -172,7 +177,7 @@
   </section>
 
 </main>
-
+</div><!-- .rack-module -->
 <script src="app.js"></script>
 </body>
 </html>

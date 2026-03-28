@@ -1,3 +1,60 @@
+// ── Knob drag interaction (adapted from Moog/Behringer Model D patch saver) ───
+(function () {
+  let drag = { active: false, dial: null, startY: 0, startRot: 0 };
+
+  function valToRot(input) {
+    const min = parseFloat(input.min), max = parseFloat(input.max);
+    const pct = (parseFloat(input.value) - min) / (max - min);
+    return -150 + pct * 300;
+  }
+
+  function applyRotation(dial, rot) {
+    rot = Math.max(-150, Math.min(150, rot));
+    dial.style.transform = `rotate(${rot}deg)`;
+    dial.dataset.rotation = rot;
+    return rot;
+  }
+
+  document.addEventListener('mousedown', e => {
+    const dial = e.target.closest('.dial');
+    if (!dial || dial.classList.contains('inactive')) return;
+    drag.active = true;
+    drag.dial   = dial;
+    drag.startY   = e.pageY;
+    drag.startRot = parseFloat(dial.dataset.rotation || 0);
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!drag.active) return;
+    const delta = drag.startY - e.pageY;   // drag up = increase
+    const rot = applyRotation(drag.dial, drag.startRot + delta);
+
+    // Sync hidden range input
+    const input = drag.dial.parentElement.querySelector('input[type="range"]');
+    if (input) {
+      const pct = (rot + 150) / 300;
+      const min = parseFloat(input.min), max = parseFloat(input.max);
+      const step = parseFloat(input.step) || 0.001;
+      const raw = min + pct * (max - min);
+      input.value = Math.round(raw / step) * step;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    e.preventDefault();
+  });
+
+  document.addEventListener('mouseup', () => { drag.active = false; });
+
+  // Public: sync dial to current input value (call after programmatic value change)
+  window.syncDial = function (input) {
+    const dial = input.parentElement.querySelector('.dial');
+    if (dial) applyRotation(dial, valToRot(input));
+  };
+  window.syncAllDials = function () {
+    document.querySelectorAll('.knob-area input[type="range"]').forEach(window.syncDial);
+  };
+})();
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
   session: null,
@@ -89,11 +146,11 @@ function renderVelProfileSliders() {
   for (let v = 0; v <= 7; v++) {
     const ratio = parseFloat(profile[String(v)]);
     const row = document.createElement('div');
-    row.className = 'slider-row';
+    row.className = 'vel-slider-row';
 
     const lbl = document.createElement('label');
-    lbl.textContent = `vel ${v}`;
-    lbl.title = `Velocity ${v} loudness ratio relative to vel 7 (1.0). Derived from original sample RMS or editable manually.`;
+    lbl.textContent = `v${v}`;
+    lbl.title = `Velocity ${v} RMS ratio (vel7 = 1.0)`;
 
     const slider = document.createElement('input');
     slider.type = 'range';
@@ -101,12 +158,13 @@ function renderVelProfileSliders() {
     slider.value = ratio;
 
     const valSpan = document.createElement('span');
-    valSpan.className = 'slider-val';
-    valSpan.textContent = ratio.toFixed(3);
+    valSpan.className = 'lcd';
+    valSpan.style.fontSize = '12px';
+    valSpan.textContent = ratio.toFixed(2);
 
     slider.addEventListener('input', () => {
       const val = parseFloat(slider.value);
-      valSpan.textContent = val.toFixed(3);
+      valSpan.textContent = val.toFixed(2);
       if (!state.config.velocity_rms_profile) state.config.velocity_rms_profile = {};
       state.config.velocity_rms_profile[String(v)] = val;
     });
@@ -133,100 +191,130 @@ function renderGlobalSliders() {
     const section = state.config[group] || {};
     for (const [key, meta] of Object.entries(state.paramMeta)) {
       if (meta.group !== group) continue;
-      container.appendChild(buildSliderRow(key, section[key], meta, (k, v) => {
+      container.appendChild(buildKnob(key, section[key], meta, (k, v) => {
         state.config[group][k] = v;
       }));
     }
   }
 }
 
-function buildSliderRow(key, value, meta, onChange) {
-  const wrap = document.createElement('div');
+// Build 11 scale mark <li> elements
+function buildKnobMarks() {
+  const ul = document.createElement('ul');
+  ul.className = 'knob-marks';
+  for (let i = 0; i < 11; i++) {
+    ul.appendChild(document.createElement('li'));
+  }
+  return ul;
+}
 
-  // Null-toggle for optional params (e.g. duration)
+function buildKnob(key, value, meta, onChange) {
+  const wrap = document.createElement('div');
+  wrap.className = 'knob-wrap';
+
+  const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const shortLabel = label.length > 10 ? label.slice(0, 10) : label;
+
+  // Null-toggle (optional param — e.g. duration)
   if (meta.default === null) {
-    const row = document.createElement('div');
-    row.className = 'null-toggle';
+    const enabled = value !== null;
+
+    const nameRow = document.createElement('div');
+    nameRow.style.cssText = 'display:flex;align-items:center;gap:4px;';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'knob-name';
+    nameSpan.textContent = shortLabel;
+    nameSpan.title = meta.doc || key;
+
+    const toggleWrap = document.createElement('label');
+    toggleWrap.className = 'null-enable';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = value !== null;
+    cb.className = 'moog-switch';
+    cb.checked = enabled;
     cb.id = `null-${key}`;
+    const dot = document.createElement('span');
+    dot.className = 'led-dot';
+    toggleWrap.appendChild(cb);
+    toggleWrap.appendChild(dot);
 
-    const lbl = document.createElement('label');
-    lbl.htmlFor = cb.id;
-    lbl.textContent = key;
-    lbl.title = meta.doc;
+    nameRow.appendChild(nameSpan);
+    nameRow.appendChild(toggleWrap);
+    wrap.appendChild(nameRow);
+
+    const area = document.createElement('div');
+    area.className = 'knob-area';
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = meta.min; input.max = meta.max; input.step = meta.step;
+    input.value = value ?? (meta.min + meta.max) / 2;
+    input.style.display = 'none';
+    const dial = document.createElement('div');
+    dial.className = 'dial' + (enabled ? '' : ' inactive');
+    area.appendChild(input);
+    area.appendChild(dial);
+    area.appendChild(buildKnobMarks());
+    wrap.appendChild(area);
 
     const valSpan = document.createElement('span');
-    valSpan.className = 'slider-val';
-    valSpan.textContent = value === null ? 'auto' : value;
+    valSpan.className = 'lcd';
+    valSpan.style.fontSize = '12px';
+    valSpan.textContent = enabled ? Number(input.value).toFixed(2) : 'auto';
+    wrap.appendChild(valSpan);
 
-    row.appendChild(cb);
-    row.appendChild(lbl);
-    row.appendChild(valSpan);
-    wrap.appendChild(row);
-
-    // Slider for when enabled
-    const sliderWrap = document.createElement('div');
-    sliderWrap.className = 'slider-row';
-    sliderWrap.id = `sw-${key}`;
-    sliderWrap.style.display = value === null ? 'none' : 'grid';
-
-    const slider = buildRangeInput(key, value ?? meta.min, meta, (v) => {
+    input.addEventListener('input', () => {
+      const v = parseFloat(input.value);
+      valSpan.textContent = v.toFixed(2);
       onChange(key, v);
-      valSpan.textContent = v;
+      syncDial(input);
     });
-    sliderWrap.appendChild(document.createElement('span')); // spacer
-    sliderWrap.appendChild(slider);
-    sliderWrap.appendChild(document.createElement('span'));
-    wrap.appendChild(sliderWrap);
-
     cb.addEventListener('change', () => {
-      const enabled = cb.checked;
-      sliderWrap.style.display = enabled ? 'grid' : 'none';
-      const v = enabled ? (meta.min + meta.max) / 2 : null;
+      const en = cb.checked;
+      dial.classList.toggle('inactive', !en);
+      const v = en ? parseFloat(input.value) : null;
       onChange(key, v);
-      valSpan.textContent = enabled ? v : 'auto';
+      valSpan.textContent = en ? Number(input.value).toFixed(2) : 'auto';
     });
+    setTimeout(() => syncDial(input), 0);
     return wrap;
   }
 
-  // Normal slider row
-  const row = document.createElement('div');
-  row.className = 'slider-row';
+  // Normal knob
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'knob-name';
+  nameSpan.textContent = shortLabel;
+  nameSpan.title = (meta.doc || key) + (meta.unit ? ` [${meta.unit}]` : '');
+  wrap.appendChild(nameSpan);
 
-  const lbl = document.createElement('label');
-  lbl.textContent = key + (meta.unit ? ` (${meta.unit})` : '');
-  lbl.title = meta.doc;
-
-  const slider = buildRangeInput(key, value, meta, (v) => {
-    onChange(key, v);
-    valSpan.textContent = v;
-  });
+  const area = document.createElement('div');
+  area.className = 'knob-area';
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = meta.min; input.max = meta.max; input.step = meta.step;
+  input.value = value ?? meta.min;
+  input.style.display = 'none';
+  const dial = document.createElement('div');
+  dial.className = 'dial';
+  area.appendChild(input);
+  area.appendChild(dial);
+  area.appendChild(buildKnobMarks());
+  wrap.appendChild(area);
 
   const valSpan = document.createElement('span');
-  valSpan.className = 'slider-val';
-  valSpan.textContent = value;
+  valSpan.className = 'lcd';
+  valSpan.style.fontSize = '12px';
+  valSpan.textContent = Number(value).toFixed(2);
+  wrap.appendChild(valSpan);
 
-  row.appendChild(lbl);
-  row.appendChild(slider);
-  row.appendChild(valSpan);
-  wrap.appendChild(row);
-  return wrap;
-}
-
-function buildRangeInput(key, value, meta, onChange) {
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.min = meta.min;
-  slider.max = meta.max;
-  slider.step = meta.step;
-  slider.value = value ?? meta.min;
-  slider.addEventListener('input', () => {
-    const v = parseFloat(slider.value);
-    onChange(v);
+  input.addEventListener('input', () => {
+    const v = parseFloat(input.value);
+    valSpan.textContent = v.toFixed(2);
+    onChange(key, v);
+    syncDial(input);
   });
-  return slider;
+  setTimeout(() => syncDial(input), 0);
+  return wrap;
 }
 
 // ── Per-note ──────────────────────────────────────────────────────────────────
@@ -248,13 +336,13 @@ function renderPerNoteSliders(data) {
     const globalKey = key.replace('_delta', '').replace('_scale', '');
     const globalVal = resolved[globalKey];
 
-    const row = buildSliderRow(key, currentVal, {
+    const knob = buildKnob(key, currentVal, {
       ...meta,
-      doc: meta.doc + (globalVal !== undefined ? `\n\nGlobal value: ${globalVal}` : ''),
+      doc: meta.doc + (globalVal !== undefined ? `\n\nGlobal: ${globalVal}` : ''),
     }, (k, v) => {
       state.currentNoteOverrides[k] = v;
     });
-    container.appendChild(row);
+    container.appendChild(knob);
   }
 }
 
@@ -400,6 +488,7 @@ async function pollGenerateStatus() {
   if (data) {
     state.config = data.config;
     renderGlobalSliders();
+    syncAllDials();
   }
 
   if (!state.jobRunning) return;
