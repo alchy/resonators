@@ -130,42 +130,123 @@ def _pan_gains(angle: float) -> tuple:
 
 # ── Core synthesis ────────────────────────────────────────────────────────────
 
-def synthesize_note(params: dict, duration: float = None,
+def _string_angles(midi: int, n_str: int, pan_spread: float) -> list:
+    """Pan angle per string. Global: bass=left, treble=right (+/-0.20 rad)."""
+    center = math.pi / 4 + (midi - 64.5) / 87.0 * 0.20
+    if n_str == 1:
+        return [center]
+    half = pan_spread / 2
+    if n_str == 2:
+        return [center - half, center + half]
+    return [center - half, center, center + half]
+
+
+def synthesize_note(params: dict,
+                    duration: float = None,
                     sr: int = 44100,
                     soundboard_strength: float = 0.0,
                     beat_scale: float = 1.0,
                     pan_spread: float = 0.55,
                     fade_out: float = 0.5,
+                    target_rms: float = 0.06,
                     rng_seed: int = None) -> np.ndarray:
-    """
-    Synthesize a piano note using physically correct multi-string beating.
+    """Synthesize a piano note in stereo (N,2) via per-string panning.
 
-    Args:
-        params:              dict from params.json['samples'][key]
-        duration:            total duration in seconds (None = extracted)
-        sr:                  output sample rate
-        soundboard_strength: [0..1] virtual soundboard mix (PARKED: default 0.0)
-        beat_scale:          multiplier on beat_hz — increase for more pronounced
-                             string interference (try 1.5-2.5); default 1.0
-        fade_out:            fade-out duration at end (seconds)
-        rng_seed:            for reproducible output
+    Each string has a distinct pan angle; beating creates different L/R
+    interference patterns giving stereo width + different L/R envelope shapes,
+    matching the character of two-microphone piano recordings.
 
-    Returns:
-        mono audio (float32, normalized to ~0.9)
+    Returns: (N, 2) float32 stereo array.
     """
     rng = np.random.default_rng(rng_seed)
-
     if duration is None:
         duration = min(params.get('duration_s', 4.0), 8.0)
+    n = int(duration * sr)
+    t = np.arange(n, dtype=np.float64) / sr
 
-    n_samples = int(duration * sr)
-    t = np.arange(n_samples, dtype=np.float64) / sr
-
-    audio = np.zeros(n_samples, dtype=np.float64)
+    L = np.zeros(n, dtype=np.float64)
+    R = np.zeros(n, dtype=np.float64)
 
     partials = params.get('partials', [])
     if not partials:
-        return audio.astype(np.float32)
+        return np.zeros((n, 2), dtype=np.float32)
+
+    A0_ref = next((p['A0'] for p in partials if p['A0'] and p['A0'] > 1e-10), 1.0)
+    midi   = params.get('midi', 60)
+    n_str  = n_strings_for_midi(midi)
+    angles = _string_angles(midi, n_str, pan_spread)
+
+    for p in partials:
+        f = p['f_hz']
+        A = p['A0']
+        if A is None or A < 1e-10 or f > sr * 0.495:
+            continue
+        amp  = A / A0_ref
+        tau1 = p.get('tau1') or 3.0
+        tau2 = p.get('tau2')
+        a1   = p.get('a1') or 1.0
+        if tau2 is not None and not p.get('mono', True):
+            env = a1 * np.exp(-t / tau1) + (1 - a1) * np.exp(-t / tau2)
+        else:
+            env = np.exp(-t / tau1)
+        beat = (p.get('beat_hz', 0.0) or 0.0) * beat_scale
+
+        if n_str == 1 or beat < 0.05:
+            phi = rng.uniform(0, 2 * math.pi)
+            s = amp * env * np.cos(2 * math.pi * f * t + phi)
+            # No beating: use center pan (average of string positions)
+            # to avoid L/R imbalance from unbeaten partials
+            center_angle = angles[len(angles) // 2]
+            gl, gr = _pan_gains(center_angle)
+            L += s * gl;  R += s * gr
+        elif n_str == 2:
+            pa, pb = rng.uniform(0, 2 * math.pi, 2)
+            sa = amp * env * np.cos(2 * math.pi * (f + beat / 2) * t + pa)
+            sb = amp * env * np.cos(2 * math.pi * (f - beat / 2) * t + pb)
+            gla, gra = _pan_gains(angles[0]);  glb, grb = _pan_gains(angles[1])
+            L += (sa * gla + sb * glb) * 0.5
+            R += (sa * gra + sb * grb) * 0.5
+        else:
+            pa, pb, pc = rng.uniform(0, 2 * math.pi, 3)
+            d = beat / 2
+            sa = amp * env * np.cos(2 * math.pi * (f - d) * t + pa)
+            sb = amp * env * np.cos(2 * math.pi * f * t + pb)
+            sc = amp * env * np.cos(2 * math.pi * (f + d) * t + pc)
+            gla, gra = _pan_gains(angles[0])
+            glb, grb = _pan_gains(angles[1])
+            glc, grc = _pan_gains(angles[2])
+            L += (sa * gla + sb * glb + sc * glc) / 3.0
+            R += (sa * gra + sb * grb + sc * grc) / 3.0
+
+    # Attack noise: independent L/R, pure transient (no persistent floor)
+    noise_p = params.get('noise', {})
+    taun    = noise_p.get('attack_tau_s', 0.05) or 0.05
+    cent    = noise_p.get('centroid_hz', 3000.0) or 3000.0
+    alp     = 1.0 - math.exp(-2 * math.pi * min(cent, sr * 0.45) / sr)
+    nenv    = np.exp(-t / max(taun, 0.001))
+    for buf in (L, R):
+        raw = rng.standard_normal(n)
+        sh = np.zeros(n);  y = 0.0
+        for i in range(n):
+            y = alp * raw[i] + (1 - alp) * y;  sh[i] = y
+        buf += 0.06 * sh * nenv
+
+    if soundboard_strength > 0.005:
+        ir = get_soundboard_ir(sr)
+        L = L + soundboard_strength * fftconvolve(L, ir, mode='same')
+        R = R + soundboard_strength * fftconvolve(R, ir, mode='same')
+
+    if fade_out > 0 and duration > fade_out:
+        nf = int(fade_out * sr);  fade = np.linspace(1.0, 0.0, nf)
+        L[-nf:] *= fade;  R[-nf:] *= fade
+
+    # RMS normalize -- avoids overboosting from peak normalization
+    rms = math.sqrt((np.mean(L ** 2) + np.mean(R ** 2)) / 2)
+    if rms > 1e-10:
+        scale = min(target_rms / rms, 0.95 / max(np.abs(L).max(), np.abs(R).max()))
+        L *= scale;  R *= scale
+
+    return np.stack([L, R], axis=1).astype(np.float32)
 
     # Reference amplitude (k=1)
     A0_ref = next((p['A0'] for p in partials if p['A0'] and p['A0'] > 1e-10), 1.0)
@@ -280,7 +361,8 @@ def synthesize_and_save(params_path: str, midi: int, vel: int,
                         duration: float = None,
                         sr: int = 44100,
                         soundboard_strength: float = 0.0,
-                        beat_scale: float = 1.0) -> str:
+                        beat_scale: float = 1.0,
+                        pan_spread: float = 0.55) -> str:
     with open(params_path) as f:
         data = json.load(f)
 
@@ -291,7 +373,7 @@ def synthesize_and_save(params_path: str, midi: int, vel: int,
     sample = data['samples'][key]
     audio  = synthesize_note(sample, duration=duration, sr=sr,
                              soundboard_strength=soundboard_strength,
-                             beat_scale=beat_scale)
+                             beat_scale=beat_scale, pan_spread=pan_spread)
 
     if out_path is None:
         Path('analysis').mkdir(exist_ok=True)
