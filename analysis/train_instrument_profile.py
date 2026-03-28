@@ -200,10 +200,79 @@ def build_dataset(samples: dict) -> dict:
             if df > 0.001:
                 df_data.append((mf, kf, math.log(df)))
 
+    # ── Outlier filtering before batching ─────────────────────────────────────
+    def iqr_filter_list(items, val_idx, k_iqr=3.0):
+        """Remove items where value at val_idx is an outlier (IQR method)."""
+        vals = np.array([x[val_idx] for x in items], dtype=float)
+        if len(vals) < 4:
+            return items
+        q25, q75 = np.percentile(vals, 25), np.percentile(vals, 75)
+        iqr = q75 - q25
+        if iqr < 1e-12:
+            return items
+        med = np.median(vals)
+        return [x for x, v in zip(items, vals) if abs(v - med) <= k_iqr * iqr]
+
+    B_data   = iqr_filter_list(B_data,   1)
+    dur_data = iqr_filter_list(dur_data, 1)
+    wf_data  = iqr_filter_list(wf_data,  1)
+    # tau: filter on log(tau1) which is index 2
+    tau_data = iqr_filter_list(tau_data, 2)
+    A0_data  = iqr_filter_list(A0_data,  3)
+    df_data  = iqr_filter_list(df_data,  2)
+
+    # Pre-stack into batch tensors for fast training
+    batches = {}
+
+    # B: [N, midi_dim], [N]
+    if B_data:
+        batches["B_mf"] = torch.stack([d[0] for d in B_data])
+        batches["B_y"]  = torch.tensor([d[1] for d in B_data], dtype=torch.float32)
+
+    if dur_data:
+        batches["dur_mf"] = torch.stack([d[0] for d in dur_data])
+        batches["dur_y"]  = torch.tensor([d[1] for d in dur_data], dtype=torch.float32)
+
+    if wf_data:
+        batches["wf_mf"] = torch.stack([d[0] for d in wf_data])
+        batches["wf_y"]  = torch.tensor([d[1] for d in wf_data], dtype=torch.float32)
+
+    if tau_data:
+        batches["tau_mf"]  = torch.stack([d[0] for d in tau_data])
+        batches["tau_kf"]  = torch.stack([d[1] for d in tau_data])
+        batches["tau_t1"]  = torch.tensor([d[2] for d in tau_data], dtype=torch.float32)
+        # tau2: use tau1 where missing
+        batches["tau_t2"]  = torch.tensor(
+            [d[3] if d[3] is not None else d[2] for d in tau_data], dtype=torch.float32)
+        batches["tau_t2m"] = torch.tensor(
+            [1.0 if d[3] is not None else 0.0 for d in tau_data], dtype=torch.float32)
+        # weight: down-weight noisy high-k partials
+        batches["tau_w"]   = torch.tensor(
+            [1.0 / (1.0 + float(d[1][0]) * 3) for d in tau_data], dtype=torch.float32)
+
+    if A0_data:
+        batches["a0_mf"] = torch.stack([d[0] for d in A0_data])
+        batches["a0_kf"] = torch.stack([d[1] for d in A0_data])
+        batches["a0_vf"] = torch.stack([d[2] for d in A0_data])
+        batches["a0_y"]  = torch.tensor([d[3] for d in A0_data], dtype=torch.float32)
+
+    if df_data:
+        batches["df_mf"] = torch.stack([d[0] for d in df_data])
+        batches["df_kf"] = torch.stack([d[1] for d in df_data])
+        batches["df_y"]  = torch.tensor([d[2] for d in df_data], dtype=torch.float32)
+
+    # EQ: subsample
+    eq_sub = eq_data[::4] if len(eq_data) > 400 else eq_data
+    if eq_sub:
+        batches["eq_mf"] = torch.stack([d[0] for d in eq_sub])
+        batches["eq_ff"] = torch.stack([d[1] for d in eq_sub])
+        batches["eq_y"]  = torch.tensor([d[2] for d in eq_sub], dtype=torch.float32)
+
     return dict(
-        B=B_data, dur=dur_data, wf=wf_data,
-        tau=tau_data, A0=A0_data, df=df_data, eq=eq_data,
-        eq_freqs=eq_freqs,
+        batches=batches, eq_freqs=eq_freqs,
+        # keep counts for logging
+        n_B=len(B_data), n_tau=len(tau_data), n_A0=len(A0_data),
+        n_df=len(df_data), n_eq=len(eq_sub) if eq_sub else 0,
     )
 
 
@@ -213,66 +282,70 @@ def train(model: InstrumentProfile, ds: dict, epochs: int = 800,
           lr: float = 3e-3, verbose: bool = True) -> list[float]:
     opt = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=lr * 0.01)
+    b = ds["batches"]
     losses = []
 
     for epoch in range(1, epochs + 1):
         opt.zero_grad()
-        loss = torch.tensor(0.0)
-        n = 0
+        terms = []
 
-        # B
-        for (mf, log_b) in ds["B"]:
-            pred = model.forward_B(mf).squeeze()
-            loss = loss + (pred - log_b) ** 2
-            n += 1
+        if "B_mf" in b:
+            pred = model.forward_B(b["B_mf"]).squeeze(-1)
+            terms.append(nn.functional.mse_loss(pred, b["B_y"]))
 
-        # duration
-        for (mf, log_d) in ds["dur"]:
-            pred = model.forward_dur(mf).squeeze()
-            loss = loss + (pred - log_d) ** 2
-            n += 1
+        if "dur_mf" in b:
+            pred = model.forward_dur(b["dur_mf"]).squeeze(-1)
+            terms.append(nn.functional.mse_loss(pred, b["dur_y"]))
 
-        # width factor
-        for (mf, log_w) in ds["wf"]:
-            pred = model.forward_wf(mf).squeeze()
-            loss = loss + (pred - log_w) ** 2
-            n += 1
+        if "wf_mf" in b:
+            pred = model.forward_wf(b["wf_mf"]).squeeze(-1)
+            terms.append(nn.functional.mse_loss(pred, b["wf_y"]))
 
-        # tau (weight higher-k less — noisy)
-        for (mf, kf, log_t1, log_t2) in ds["tau"]:
-            k_weight = 1.0 / (1.0 + float(kf[0]) * 3)
-            pred = model.forward_tau(mf, kf)
-            loss = loss + k_weight * (pred[0] - log_t1) ** 2
-            if log_t2 is not None:
-                loss = loss + k_weight * 0.5 * (pred[1] - log_t2) ** 2
-            n += 1
+        if "tau_mf" in b:
+            pred = model.forward_tau(b["tau_mf"], b["tau_kf"])  # [N,2]
+            loss_t1 = (b["tau_w"] * (pred[:, 0] - b["tau_t1"]) ** 2).mean()
+            loss_t2 = (b["tau_w"] * b["tau_t2m"] * (pred[:, 1] - b["tau_t2"]) ** 2).mean()
+            terms.append(loss_t1 + 0.5 * loss_t2)
 
-        # A0 ratio
-        for (mf, kf, vf, log_r) in ds["A0"]:
-            pred = model.forward_A0(mf, kf, vf).squeeze()
-            loss = loss + (pred - log_r) ** 2
-            n += 1
+        if "a0_mf" in b:
+            pred = model.forward_A0(b["a0_mf"], b["a0_kf"], b["a0_vf"]).squeeze(-1)
+            terms.append(nn.functional.mse_loss(pred, b["a0_y"]))
 
-        # df
-        for (mf, kf, log_df) in ds["df"]:
-            pred = model.forward_df(mf, kf).squeeze()
-            loss = loss + (pred - log_df) ** 2
-            n += 1
+        if "df_mf" in b:
+            pred = model.forward_df(b["df_mf"], b["df_kf"]).squeeze(-1)
+            terms.append(nn.functional.mse_loss(pred, b["df_y"]))
 
-        # EQ (subsample to limit compute)
-        eq_batch = ds["eq"][::4] if len(ds["eq"]) > 200 else ds["eq"]
-        for (mf, ff, g) in eq_batch:
-            pred = model.forward_eq(mf, ff).squeeze()
-            loss = loss + 0.1 * (pred - g) ** 2
-            n += 1
+        if "eq_mf" in b:
+            pred = model.forward_eq(b["eq_mf"], b["eq_ff"]).squeeze(-1)
+            terms.append(0.1 * nn.functional.mse_loss(pred, b["eq_y"]))
 
-        if n > 0:
-            loss = loss / n
+        # Smoothness penalty: consecutive MIDI values should give similar outputs
+        # Evaluated on a fixed grid, independent of training data
+        if epoch % 5 == 0:
+            midi_grid = torch.arange(21, 108, dtype=torch.float32)
+            mf_grid = torch.stack([midi_feat(float(m)) for m in midi_grid])
+            kf_ref = k_feat(1)
+            kf_batch = kf_ref.unsqueeze(0).expand(len(midi_grid), -1)
+            vf_ref = vel_feat(4)
+            vf_batch = vf_ref.unsqueeze(0).expand(len(midi_grid), -1)
+
+            B_grid  = model.forward_B(mf_grid).squeeze(-1)
+            tau_grid = model.forward_tau(mf_grid, kf_batch)[:, 0]
+            a0_grid = model.forward_A0(mf_grid, kf_batch, vf_batch).squeeze(-1)
+
+            smooth = (
+                (B_grid[1:] - B_grid[:-1]).pow(2).mean() +
+                (tau_grid[1:] - tau_grid[:-1]).pow(2).mean() +
+                (a0_grid[1:] - a0_grid[:-1]).pow(2).mean()
+            )
+            terms.append(0.3 * smooth)
+
+        loss = sum(terms) / len(terms) if terms else torch.tensor(0.0)
         loss.backward()
         opt.step()
         sched.step()
 
-        losses.append(float(loss))
+        losses.append(float(loss.detach()))
         if verbose and epoch % 100 == 0:
             print(f"  epoch {epoch:4d}/{epochs}  loss={loss.item():.6f}  lr={sched.get_last_lr()[0]:.2e}")
 
@@ -415,8 +488,8 @@ def main():
 
     print("Building dataset ...")
     ds = build_dataset(samples)
-    print(f"  B={len(ds['B'])}  dur={len(ds['dur'])}  tau={len(ds['tau'])}  "
-          f"A0={len(ds['A0'])}  df={len(ds['df'])}  eq={len(ds['eq'])}")
+    print(f"  B={ds['n_B']}  tau={ds['n_tau']}  A0={ds['n_A0']}  "
+          f"df={ds['n_df']}  eq={ds['n_eq']}")
 
     model = InstrumentProfile(hidden=args.hidden)
     n_params = sum(p.numel() for p in model.parameters())
