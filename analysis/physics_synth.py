@@ -228,15 +228,14 @@ def synthesize_note(params: dict, duration: float = None,
     # Noise is now purely transient: strong at attack, decays with tau_noise.
     noise_params = params.get('noise', {})
     tau_noise = noise_params.get('attack_tau_s', 0.05) or 0.05
-    centroid  = noise_params.get('centroid_hz', 2000.0) or 2000.0
-
-    # Cap centroid to avoid high-frequency noise bleeding into treble harmonics
-    centroid = min(centroid, 2000.0)
+    centroid  = noise_params.get('centroid_hz', 3000.0) or 3000.0
+    # Use extracted centroid directly -- encodes hammer brightness per MIDI.
+    # The 2000 Hz cap was killing the metallic attack ("cink") in treble.
 
     noise_raw = rng.standard_normal(n_samples)
 
-    # First-order IIR low-pass at centroid_hz
-    alpha_lp = 1.0 - math.exp(-2 * math.pi * centroid / sr)
+    # First-order IIR low-pass at centroid_hz (capped at Nyquist safety margin)
+    alpha_lp = 1.0 - math.exp(-2 * math.pi * min(centroid, sr * 0.45) / sr)
     noise_shaped = np.zeros_like(noise_raw)
     y = 0.0
     for i in range(n_samples):
@@ -246,7 +245,7 @@ def synthesize_note(params: dict, duration: float = None,
     # Pure attack envelope — no constant floor
     noise_env    = np.exp(-t / max(tau_noise, 0.001))
     noise_signal = noise_shaped * noise_env
-    noise_level  = 0.04  # reduced from 0.08; attack thump only
+    noise_level  = 0.06  # 0.04 was too quiet; bright attack needs presence
     audio       += noise_level * noise_signal
 
     # ── Soundboard (parked) ───────────────────────────────────────────────────
