@@ -125,6 +125,7 @@ async function selectSession(name) {
     el('main-panel').classList.add('hidden');
     el('btn-delete-session').disabled = true;
     el('train-out').value = 'analysis/params_profile.json';
+    el('lcd-patch-name').textContent = '— NO SESSION —';
     stopPolling();
     return;
   }
@@ -132,6 +133,7 @@ async function selectSession(name) {
   el('btn-delete-session').disabled = false;
   el('main-panel').classList.remove('hidden');
   el('train-out').value = `analysis/params_profile_${name}.json`;
+  el('lcd-patch-name').textContent = name.toUpperCase();
   await reloadConfig();
   await loadFiles();
   startPolling();
