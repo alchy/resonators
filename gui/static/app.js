@@ -566,7 +566,23 @@ const PROFILE_API = (path) => `/api/profile${path}`;
 
 let trainPollTimer = null;
 
+el('btn-train-apply').addEventListener('click', async () => {
+  if (!state.session) {
+    el('train-status').textContent = 'Select a session first.';
+    return;
+  }
+  try {
+    await fetch(PROFILE_API(`/apply/${state.session}`), { method: 'POST' });
+    el('btn-train-apply').classList.add('hidden');
+    el('train-status').textContent = `✓ Applied to session "${state.session}" — reload params to see changes`;
+    await reloadConfig();
+  } catch (e) {
+    el('train-status').textContent = 'Apply error: ' + e.message;
+  }
+});
+
 el('btn-train-ddsp').addEventListener('click', async () => {
+  el('btn-train-apply').classList.add('hidden');
   const body = {
     wav_dir: el('train-wav-dir').value.trim(),
     out:     el('train-out').value.trim(),
@@ -620,6 +636,7 @@ async function pollTrainStatus() {
       el('btn-train-cancel').classList.add('hidden');
       el('train-status').textContent =
         `✓ Done — ${j.n_nn || 0} NN + ${j.n_orig || 0} orig → ${j.out || ''}`;
+      el('btn-train-apply').classList.remove('hidden');
     } else if (j.status === 'cancelled') {
       clearInterval(trainPollTimer); trainPollTimer = null;
       el('btn-train-ddsp').classList.remove('hidden');

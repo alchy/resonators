@@ -153,3 +153,33 @@ def cancel_train():
         raise HTTPException(400, "No active training job")
     _job["cancel"] = True
     return {"cancelling": True}
+
+
+@router.post("/profile/apply/{session_name}")
+def apply_profile_to_session(session_name: str):
+    """
+    Point the session's source_params at the trained profile output
+    and copy it into the session directory so it survives file moves.
+    """
+    import shutil
+    from gui.routers.sessions import session_dir, load_config, save_config
+
+    out_path = _job.get("out")
+    if not out_path or not Path(out_path).exists():
+        raise HTTPException(400, f"Trained profile not found: {out_path}")
+
+    sdir = session_dir(session_name)
+    if not sdir.exists():
+        raise HTTPException(404, f"Session '{session_name}' not found")
+
+    # Copy trained profile into session directory
+    dest = sdir / "params.json"
+    shutil.copy2(out_path, dest)
+
+    # Update session config to reference the session-local copy
+    cfg = load_config(session_name)
+    cfg["source_params"] = str(dest)
+    save_config(session_name, cfg)
+
+    log.info(f"Applied DDSP profile to session '{session_name}' -> {dest}")
+    return {"applied": True, "source_params": str(dest)}
