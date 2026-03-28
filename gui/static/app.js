@@ -561,6 +561,82 @@ el('btn-delete-session').addEventListener('click', async () => {
   await selectSession('');
 });
 
+// ── DDSP training ─────────────────────────────────────────────────────────────
+const PROFILE_API = (path) => `/api/profile${path}`;
+
+let trainPollTimer = null;
+
+el('btn-train-ddsp').addEventListener('click', async () => {
+  const body = {
+    wav_dir: el('train-wav-dir').value.trim(),
+    out:     el('train-out').value.trim(),
+    epochs:  parseInt(el('train-epochs').value),
+    kmax:    parseInt(el('train-kmax').value),
+    seg:     parseFloat(el('train-seg').value),
+  };
+  try {
+    const res = await fetch(PROFILE_API('/train'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      el('train-status').textContent = 'Error: ' + (err.detail || res.statusText);
+      return;
+    }
+    el('btn-train-ddsp').classList.add('hidden');
+    el('btn-train-cancel').classList.remove('hidden');
+    el('train-progress-wrap').classList.remove('hidden');
+    el('train-status').textContent = 'Loading WAV files…';
+    trainPollTimer = setInterval(pollTrainStatus, 1000);
+  } catch (e) {
+    el('train-status').textContent = 'Error: ' + e.message;
+  }
+});
+
+el('btn-train-cancel').addEventListener('click', async () => {
+  await fetch(PROFILE_API('/cancel'), { method: 'POST' }).catch(() => {});
+  el('train-status').textContent = 'Cancelling…';
+});
+
+async function pollTrainStatus() {
+  try {
+    const res = await fetch(PROFILE_API('/status'));
+    if (!res.ok) return;
+    const j = await res.json();
+
+    el('train-progress-fill').style.width = (j.progress_pct || 0) + '%';
+    el('train-progress-label').textContent = `${j.epoch || 0} / ${j.total || 0}`;
+
+    const etaStr = j.eta_s != null
+      ? `  ETA ${j.eta_s >= 60 ? Math.round(j.eta_s/60)+'m' : j.eta_s+'s'}`
+      : '';
+    const lossStr = j.loss != null ? `  loss=${j.loss.toFixed(4)}` : '';
+
+    if (j.status === 'done') {
+      clearInterval(trainPollTimer); trainPollTimer = null;
+      el('btn-train-ddsp').classList.remove('hidden');
+      el('btn-train-cancel').classList.add('hidden');
+      el('train-status').textContent =
+        `✓ Done — ${j.n_nn || 0} NN + ${j.n_orig || 0} orig → ${j.out || ''}`;
+    } else if (j.status === 'cancelled') {
+      clearInterval(trainPollTimer); trainPollTimer = null;
+      el('btn-train-ddsp').classList.remove('hidden');
+      el('btn-train-cancel').classList.add('hidden');
+      el('train-status').textContent = 'Cancelled at epoch ' + j.epoch;
+    } else if (j.status === 'error') {
+      clearInterval(trainPollTimer); trainPollTimer = null;
+      el('btn-train-ddsp').classList.remove('hidden');
+      el('btn-train-cancel').classList.add('hidden');
+      el('train-status').textContent = 'Error: ' + (j.error || 'unknown');
+    } else {
+      const statusLabel = { loading: 'Loading WAVs…', running: 'Training', saving: 'Saving profile…' };
+      el('train-status').textContent = (statusLabel[j.status] || j.status) + lossStr + etaStr;
+    }
+  } catch (e) { /* ignore transient fetch errors */ }
+}
+
 // ── Velocity profile ──────────────────────────────────────────────────────────
 el('btn-vel-profile').addEventListener('click', async () => {
   if (!state.session) return;

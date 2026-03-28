@@ -206,9 +206,15 @@ def train_ddsp(model: InstrumentProfile, wav_bank: dict,
                sr: int = 44100, seg_len: int = 22050,
                k_max: int = 16, batch_size: int = 8,
                fft_sizes: tuple = (256, 2048),
-               verbose: bool = True) -> list:
+               verbose: bool = True,
+               progress: dict | None = None) -> list:
     """
     Train InstrumentProfile end-to-end on WAV segments using batched synthesis.
+
+    progress (optional shared dict for GUI polling):
+      progress["epoch"]  — updated each epoch
+      progress["loss"]   — current average loss
+      progress["cancel"] — set True externally to stop early
     """
     feat  = build_feature_tables(sr=sr, k_max=k_max)
     opt   = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
@@ -247,6 +253,12 @@ def train_ddsp(model: InstrumentProfile, wav_bank: dict,
         if verbose and epoch % 10 == 0:
             print(f"  epoch {epoch:4d}/{epochs}  loss={avg:.5f}  "
                   f"lr={sched.get_last_lr()[0]:.2e}")
+
+        if progress is not None:
+            progress["epoch"] = epoch
+            progress["loss"]  = round(avg, 5)
+            if progress.get("cancel"):
+                break
 
     return losses
 

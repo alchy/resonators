@@ -273,6 +273,8 @@ input[type="range"]:hover::-webkit-slider-thumb { background: #00ffaa; }
 
 .gen-actions { display: flex; gap: 0.5rem; }
 .vel-profile-row { display: flex; gap: 0.5rem; align-items: center; margin-top: 4px; }
+.train-row       { display: flex; gap: 0.5rem; align-items: center; }
+.train-actions   { display: flex; gap: 0.5rem; }
 
 .progress-bar { display: flex; align-items: center; gap: 0.5rem; }
 .progress-track {
