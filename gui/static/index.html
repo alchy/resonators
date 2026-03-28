@@ -125,6 +125,14 @@
         <label style="font-size:10px">K-max  <input id="train-kmax"   type="number" value="16"  min="4"  max="32"   style="width:45px"></label>
         <label style="font-size:10px">Seg(s) <input id="train-seg"    type="number" value="0.5" min="0.2" max="3" step="0.1" style="width:45px"></label>
       </div>
+      <div class="train-row" style="margin-top:4px;gap:12px">
+        <label style="font-size:10px"><input type="checkbox" id="train-preserve-orig"> Preserve originals (only fill missing)</label>
+        <label style="font-size:10px">Init from
+          <select id="train-init" style="font-size:10px">
+            <option value="">— random —</option>
+          </select>
+        </label>
+      </div>
       <div class="train-actions" style="margin-top:6px">
         <button id="btn-train-ddsp" class="primary">▶ Train DDSP</button>
         <button id="btn-train-cancel" class="danger hidden">■ Cancel</button>
