@@ -91,8 +91,10 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
                 filtered = {k: v for k, v in kwargs.items() if k in allowed}
 
                 audio = synthesize_note(sample, **filtered)
-                fname = f"{midi_to_name(midi).replace('#','s')}_vel{vel}.wav"
-                sf.write(str(out_dir / fname), audio, int(filtered.get("sr", 44100)))
+                sr_val = int(filtered.get("sr", 44100))
+                sr_code = 48 if sr_val >= 48000 else 44
+                fname = f"m{midi:03d}-vel{vel}-f{sr_code}.wav"
+                sf.write(str(out_dir / fname), audio, sr_val)
                 job["last_file"] = fname
             except Exception as e:
                 log.error(f"[{session_name}] {key}: {e}")
@@ -102,6 +104,23 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
     job["status"] = "done"
     job["finished_at"] = time.time()
     log.info(f"[{session_name}] Job done: {job['done']} files, {len(job['errors'])} errors")
+
+    # Write instrument-definition.json into the generated directory
+    n_files = len(list(out_dir.glob("*.wav")))
+    meta = cfg.get("instrument_meta", {})
+    instrument_def = {
+        "instrumentName":    meta.get("instrumentName", session_name),
+        "velocityMaps":      str(len(job.get("vel_layers", [3]))),
+        "instrumentVersion": meta.get("instrumentVersion", "1"),
+        "author":            meta.get("author", "Unknown"),
+        "description":       meta.get("description", "N/A"),
+        "category":          meta.get("category", "Piano"),
+        "sampleCount":       n_files,
+    }
+    (out_dir / "instrument-definition.json").write_text(
+        json.dumps(instrument_def, indent=2, ensure_ascii=False)
+    )
+    log.info(f"[{session_name}] instrument-definition.json written ({n_files} samples)")
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────

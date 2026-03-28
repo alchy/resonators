@@ -62,6 +62,7 @@ def list_sessions():
 class CreateSession(BaseModel):
     name: str
     source_params: str = "analysis/params.json"
+    instrument_meta: dict = {}
 
 
 @router.post("")
@@ -81,6 +82,15 @@ def create_session(body: CreateSession):
     shutil.copy(src, d / "params.json")
 
     cfg = default_config(str(d / "params.json"))
+    cfg["instrument_meta"] = {
+        "instrumentName": body.instrument_meta.get("instrumentName", name),
+        "author":         body.instrument_meta.get("author", "Unknown"),
+        "category":       body.instrument_meta.get("category", "Piano"),
+        "instrumentVersion": body.instrument_meta.get("instrumentVersion", "1"),
+        "description":    body.instrument_meta.get("description", "N/A"),
+        "velocityMaps":   "8",
+        "sampleCount":    0,
+    }
     save_config(name, cfg)
     return {"name": name, "created": True}
 

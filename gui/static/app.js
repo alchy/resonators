@@ -532,10 +532,17 @@ el('btn-create-session').addEventListener('click', async () => {
   const name = el('new-session-name').value.trim();
   const params = el('new-session-params').value.trim();
   if (!name) { showError('modal-error', 'Name is required'); return; }
+  const instrument_meta = {
+    instrumentName: el('new-inst-name').value.trim() || name,
+    author:         el('new-inst-author').value.trim() || 'Unknown',
+    category:       el('new-inst-category').value.trim() || 'Piano',
+    instrumentVersion: el('new-inst-version').value.trim() || '1',
+    description:    el('new-inst-desc').value.trim() || 'N/A',
+  };
   try {
     await apiFetch('', {
       method: 'POST',
-      body: JSON.stringify({ name, source_params: params }),
+      body: JSON.stringify({ name, source_params: params, instrument_meta }),
     });
     closeModal('modal-new-session');
     await loadSessions();

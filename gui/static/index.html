@@ -22,8 +22,13 @@
 <div id="modal-new-session" class="modal hidden">
   <div class="modal-box">
     <h2>New Session</h2>
-    <label>Name <input id="new-session-name" type="text" placeholder="grand_steinway"></label>
+    <label>Session name <input id="new-session-name" type="text" placeholder="grand_steinway"></label>
     <label>Source params.json <input id="new-session-params" type="text" value="analysis/params.json"></label>
+    <label>Instrument name <input id="new-inst-name" type="text" placeholder="KS Grand Piano"></label>
+    <label>Author <input id="new-inst-author" type="text" value="n/a"></label>
+    <label>Category <input id="new-inst-category" type="text" value="Piano"></label>
+    <label>Version <input id="new-inst-version" type="text" value="1"></label>
+    <label>Description <input id="new-inst-desc" type="text" value="n/a"></label>
     <div class="modal-actions">
       <button id="btn-create-session">Create</button>
       <button class="cancel" onclick="closeModal('modal-new-session')">Cancel</button>
