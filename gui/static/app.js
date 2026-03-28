@@ -620,12 +620,15 @@ el('btn-train-apply').addEventListener('click', async () => {
 
 el('btn-train-ddsp').addEventListener('click', async () => {
   el('btn-train-apply').classList.add('hidden');
+  const initVal = el('train-init').value.trim();
   const body = {
-    wav_dir: el('train-wav-dir').value.trim(),
-    out:     el('train-out').value.trim(),
-    epochs:  parseInt(el('train-epochs').value),
-    kmax:    parseInt(el('train-kmax').value),
-    seg:     parseFloat(el('train-seg').value),
+    wav_dir:      el('train-wav-dir').value.trim(),
+    out:          el('train-out').value.trim(),
+    epochs:       parseInt(el('train-epochs').value),
+    kmax:         parseInt(el('train-kmax').value),
+    seg:          parseFloat(el('train-seg').value),
+    preserve_orig: el('train-preserve-orig').checked,
+    init:         initVal,
   };
   try {
     const res = await fetch(PROFILE_API('/train'), {
@@ -685,6 +688,7 @@ async function pollTrainStatus() {
       el('train-status').textContent =
         `✓ Done — ${j.n_nn || 0} NN + ${j.n_orig || 0} orig → ${j.out || ''}`;
       el('btn-train-apply').classList.remove('hidden');
+      refreshTrainInitSelect();
     } else if (j.status === 'cancelled') {
       clearInterval(trainPollTimer); trainPollTimer = null;
       el('btn-train-ddsp').classList.remove('hidden');
@@ -721,8 +725,26 @@ el('btn-vel-profile').addEventListener('click', async () => {
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
+async function refreshTrainInitSelect() {
+  const sel = el('train-init');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— random —</option>';
+  try {
+    const res = await fetch(PROFILE_API('/models'));
+    const data = await res.json();
+    (data.models || []).forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m.replace('analysis/', '');
+      sel.appendChild(opt);
+    });
+  } catch { /* no models yet */ }
+  if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+
 initVelCheckboxes();
 loadSessions();
+refreshTrainInitSelect();
 
 // Note name update on midi input
 el('note-midi').addEventListener('input', () => {

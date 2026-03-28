@@ -26,16 +26,17 @@ _job: dict = {"status": "idle"}
 
 
 class TrainRequest(BaseModel):
-    wav_dir:    str  = "C:/SoundBanks/IthacaPlayer/ks-grand"
-    out:        str  = "analysis/params_profile.json"
-    model_out:  str  = "analysis/profile_ddsp.pt"
-    init:       str  = ""           # optional warm-start path
-    epochs:     int  = 300
-    seg:        float = 0.5
-    kmax:       int  = 16
-    batch:      int  = 8
-    lr:         float = 1e-3
-    sr:         int  = 44100
+    wav_dir:        str   = "C:/SoundBanks/IthacaPlayer/ks-grand"
+    out:            str   = "analysis/params_profile.json"
+    model_out:      str   = "analysis/profile_ddsp.pt"
+    init:           str   = ""       # optional warm-start path
+    epochs:         int   = 300
+    seg:            float = 0.5
+    kmax:           int   = 16
+    batch:          int   = 8
+    lr:             float = 1e-3
+    sr:             int   = 44100
+    preserve_orig:  bool  = False    # keep extracted params for notes in params.json
 
 
 def _run_train(req: TrainRequest):
@@ -99,9 +100,13 @@ def _run_train(req: TrainRequest):
         # Generate profile
         job["status"] = "saving"
         orig_samples = None
-        params_path = Path("analysis/params.json")
-        if params_path.exists():
-            orig_samples = json.loads(params_path.read_text()).get("samples")
+        if req.preserve_orig:
+            params_path = Path("analysis/params.json")
+            if params_path.exists():
+                orig_samples = json.loads(params_path.read_text()).get("samples")
+                job.setdefault("log_lines", []).append(
+                    f"Preserving originals from analysis/params.json"
+                )
 
         ds = {"eq_freqs": None, "batches": {}}
         profile_samples = generate_profile(model, ds, orig_samples=orig_samples)
@@ -140,6 +145,16 @@ def list_profiles():
     if p.exists():
         files.append(str(p).replace("\\", "/"))
     return {"profiles": files}
+
+
+@router.get("/profile/models")
+def list_models():
+    """Return available .pt model files in analysis/ for warm-start."""
+    analysis_dir = Path("analysis")
+    files = []
+    for p in sorted(analysis_dir.glob("*.pt")):
+        files.append(str(p).replace("\\", "/"))
+    return {"models": files}
 
 
 @router.post("/profile/train")
