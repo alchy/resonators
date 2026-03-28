@@ -40,6 +40,32 @@ import soundfile as sf
 from scipy.signal import fftconvolve, lfilter
 
 
+def load_synth_config(path: str = 'analysis/synth_config.json') -> dict:
+    """Load synthesis config. Returns empty dict if file not found."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def synth_config_to_kwargs(config: dict) -> dict:
+    """Extract synthesize_note() kwargs from synth_config.json structure."""
+    kwargs = {}
+    r = config.get('render', {})
+    t = config.get('timbre', {})
+    s = config.get('stereo', {})
+    for key, section in [
+        ('sr', r), ('duration', r), ('fade_out', r), ('target_rms', r),
+        ('harmonic_brightness', t), ('beat_scale', t),
+        ('eq_strength', t), ('soundboard_strength', t),
+        ('pan_spread', s), ('stereo_boost', s),
+    ]:
+        if key in section and not key.startswith('_'):
+            kwargs[key] = section[key]
+    return kwargs
+
+
 # ── String count per MIDI note ────────────────────────────────────────────────
 
 def n_strings_for_midi(midi: int) -> int:
@@ -131,7 +157,8 @@ def _pan_gains(angle: float) -> tuple:
 # ── Core synthesis ────────────────────────────────────────────────────────────
 
 def apply_spectral_eq(audio: np.ndarray, eq_data: dict,
-                      sr: int, strength: float = 1.0) -> np.ndarray:
+                      sr: int, strength: float = 1.0,
+                      freq_min: float = 400.0) -> np.ndarray:
     """Apply per-note spectral EQ derived from original sample comparison.
 
     H(f) = LTASE_original / LTASE_synth captures the soundboard spectral
@@ -144,6 +171,9 @@ def apply_spectral_eq(audio: np.ndarray, eq_data: dict,
         eq_data:  dict with keys freqs_hz and gains_db (64 log-spaced points)
         sr:       sample rate
         strength: [0,1] blend (0=bypass, 1=full EQ)
+        freq_min: EQ is flat (0 dB) below this frequency. Avoids room
+                  acoustics contamination from LTASE at low frequencies
+                  (default 400 Hz — below this the EQ distorts the fundamental).
 
     Returns: (N, 2) float32
     """
@@ -154,6 +184,18 @@ def apply_spectral_eq(audio: np.ndarray, eq_data: dict,
     gains_db     = np.array(eq_data.get("gains_db", []), dtype=np.float64)
     if len(freqs_stored) == 0:
         return audio
+
+    # Zero out EQ gains below freq_min (transition over one octave)
+    # This prevents the EQ from cutting the fundamental/low harmonics
+    # where the LTASE ratio is contaminated by room acoustics.
+    if freq_min > 0:
+        fade_low = freq_min / 2.0  # start of transition (-1 oct)
+        for i, f in enumerate(freqs_stored):
+            if f < fade_low:
+                gains_db[i] = 0.0
+            elif f < freq_min:
+                t = (f - fade_low) / (freq_min - fade_low)  # 0..1
+                gains_db[i] = gains_db[i] * t
 
     n = len(audio)
     # FFT on next power of 2 for efficiency
@@ -178,6 +220,28 @@ def apply_spectral_eq(audio: np.ndarray, eq_data: dict,
     return result
 
 
+def apply_stereo_width(audio: np.ndarray, width_factor: float, stereo_boost: float = 1.0) -> np.ndarray:
+    """M/S stereo width scaling.
+
+    width_factor: derived from original sample (rms(S_orig)/rms(M_orig)) / (rms(S_synth)/rms(M_synth))
+    stereo_boost: additional multiplicative boost on top of width_factor (1.0 = no extra boost)
+    Effective Side gain = width_factor * stereo_boost
+    Mid channel is unchanged.
+    """
+    effective = float(np.clip(width_factor * stereo_boost, 0.0, 6.0))
+    if abs(effective - 1.0) < 0.01:
+        return audio
+    L = audio[:, 0].astype(np.float64)
+    R = audio[:, 1].astype(np.float64)
+    M = (L + R) / 2.0
+    S = (L - R) / 2.0
+    S_scaled = S * effective
+    result = np.empty_like(audio)
+    result[:, 0] = (M + S_scaled).astype(np.float32)
+    result[:, 1] = (M - S_scaled).astype(np.float32)
+    return result
+
+
 def _string_angles(midi: int, n_str: int, pan_spread: float) -> list:
     """Pan angle per string. Global: bass=left, treble=right (+/-0.20 rad)."""
     center = math.pi / 4 + (midi - 64.5) / 87.0 * 0.20
@@ -196,6 +260,9 @@ def synthesize_note(params: dict,
                     beat_scale: float = 1.0,
                     pan_spread: float = 0.55,
                     eq_strength: float = 1.0,
+                    eq_freq_min: float = 400.0,
+                    stereo_boost: float = 1.0,
+                    harmonic_brightness: float = 0.0,
                     fade_out: float = 0.5,
                     target_rms: float = 0.06,
                     rng_seed: int = None) -> np.ndarray:
@@ -230,7 +297,17 @@ def synthesize_note(params: dict,
         A = p['A0']
         if A is None or A < 1e-10 or f > sr * 0.495:
             continue
-        amp  = A / A0_ref
+        k = p.get('k', 1) or 1
+        # Harmonic brightness: boost amplitude of upper partials.
+        # harmonic_brightness=0: no change (default).
+        # harmonic_brightness=1: doubles amplitude at k=5, triples at k=9, etc.
+        # Models the fact that the original samples have stronger attack transient
+        # in upper harmonics than our extraction captures.
+        if harmonic_brightness != 0.0 and k > 1:
+            bright_gain = 1.0 + harmonic_brightness * math.log2(k)
+        else:
+            bright_gain = 1.0
+        amp  = (A / A0_ref) * bright_gain
         tau1 = p.get('tau1') or 3.0
         tau2 = p.get('tau2')
         a1   = p.get('a1') or 1.0
@@ -329,12 +406,33 @@ def synthesize_note(params: dict,
     # Derived per-note from LTASE_original / LTASE_synth in compute_spectral_eq.py
     eq_data = params.get("spectral_eq")
     if eq_data and eq_strength > 0.005:
-        stereo = apply_spectral_eq(stereo, eq_data, sr, strength=eq_strength)
+        stereo = apply_spectral_eq(stereo, eq_data, sr, strength=eq_strength,
+                                   freq_min=eq_freq_min)
         # Re-normalize after EQ (EQ may shift level despite 0 dB mean target)
         rms_post = math.sqrt(np.mean(stereo ** 2))
         if rms_post > 1e-10:
             scale = min(target_rms / rms_post, 0.95 / np.abs(stereo).max())
             stereo = stereo * scale
+
+    # Stereo width from sample-derived factor + parametric boost
+    # width_factor stored per-note in spectral_eq by compute_spectral_eq.py
+    width_factor = 1.0
+    if eq_data:
+        width_factor = float(eq_data.get('stereo_width_factor', 1.0) or 1.0)
+    if abs(width_factor * stereo_boost - 1.0) > 0.01:
+        stereo = apply_stereo_width(stereo, width_factor, stereo_boost)
+        # Re-normalize after width scaling (louder side increases RMS)
+        rms_w = math.sqrt(np.mean(stereo ** 2))
+        if rms_w > 1e-10:
+            scale = min(target_rms / rms_w, 0.95 / np.abs(stereo).max())
+            stereo = stereo * scale
+
+    # Short onset ramp: oscillators start at cos(phi) which is generally non-zero.
+    # A 3 ms linear ramp from 0 eliminates the click without affecting perceived attack.
+    n_onset = min(int(0.003 * sr), n // 10)
+    if n_onset > 1:
+        ramp = np.linspace(0.0, 1.0, n_onset, dtype=np.float32)
+        stereo[:n_onset] *= ramp[:, np.newaxis]
 
     return stereo
 

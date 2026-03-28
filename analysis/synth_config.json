@@ -1,0 +1,71 @@
+{
+  "_doc": "Global synthesis control parameters for physics_synth.py::synthesize_note(). All values here override the defaults. Per-note extracted data lives in params.json.",
+
+  "render": {
+    "_doc": "Passed directly to synthesize_note(). All are freely adjustable at any time, including in real-time.",
+
+    "sr": 44100,
+    "_sr_doc": "Sample rate. 44100 matches source samples.",
+
+    "duration": null,
+    "_duration_doc": "Note duration in seconds. null = use duration_s from params.json (up to 8s).",
+
+    "fade_out": 0.5,
+    "_fade_out_doc": "Fade-out duration at note end, in seconds.",
+
+    "target_rms": 0.06,
+    "_target_rms_doc": "Output RMS level (0.0-1.0). Controls overall loudness before clipping."
+  },
+
+  "timbre": {
+    "_doc": "Spectral and harmonic shaping. Each parameter is a single float — safe to vary in real-time.",
+
+    "harmonic_brightness": 1.0,
+    "_harmonic_brightness_doc": "Boosts amplitude of upper partials: gain = 1 + brightness * log2(k). 0=flat, 1=moderate boost, 2=strong. Compensates for extraction underestimating high-k transient energy.",
+
+    "beat_scale": 1.0,
+    "_beat_scale_doc": "Scales inter-string beating frequency. 0=no beating (static), 1=extracted value, 2=twice as fast beating. Affects 'liveliness' and modulation depth.",
+
+    "eq_strength": 0.0,
+    "_eq_strength_doc": "Blend of spectral EQ correction (LTASE_orig/LTASE_synth ratio). 0=off, 1=full. Currently problematic: EQ was computed including room acoustics so it distorts spectral shape. Leave at 0 until re-derived.",
+
+    "soundboard_strength": 0.0,
+    "_soundboard_strength_doc": "Modal IR convolution simulating soundboard resonance. Parked at 0 — causes 'croaking' band-pass distortion with current 40-mode IR."
+  },
+
+  "stereo": {
+    "_doc": "Spatial parameters. Safe to vary in real-time.",
+
+    "pan_spread": 0.55,
+    "_pan_spread_doc": "Per-string pan angle spread in radians. 0=mono center, 0.55=natural spread, 1.5=wide. Bass notes are panned left, treble right (±0.20 rad global offset).",
+
+    "stereo_boost": 1.0,
+    "_stereo_boost_doc": "M/S stereo width multiplier on top of sample-derived width_factor. 1.0=use derived factor only, 2.0=double the side channel.",
+
+    "eq_stereo_width": true,
+    "_eq_stereo_width_doc": "Whether to apply per-note stereo_width_factor from spectral_eq (derived from rms(S_orig)/rms(M_orig) vs synth). true=on."
+  },
+
+  "per_note_overrides": {
+    "_doc": "Optional per-MIDI overrides applied on top of extracted params.json values. Format: midi_note -> parameter -> value. These are NOT yet implemented in synthesize_note() but show intended extension.",
+
+    "example_A2_45": {
+      "tau_scale_k1": 2.0,
+      "_tau_scale_k1_doc": "Scale tau1 of k=1 partial. A2 k=1 has extracted tau=0.29s which is too short. Multiply by 2.0 to get 0.58s."
+    }
+  },
+
+  "extraction_params": {
+    "_doc": "Parameters used during extract_params.py. Changing these requires re-running extraction.",
+
+    "sr": 44100,
+    "n_fft": 8192,
+    "hop": 512,
+    "n_harmonics_max": 48,
+    "peak_threshold_db": -60,
+    "inharmonicity_model": "quadratic",
+    "_inharmonicity_doc": "f_k = k * f0 * sqrt(1 + B*k^2). B extracted per-note.",
+    "biexp_fit": true,
+    "_biexp_doc": "Fit bi-exponential (a1*exp(-t/tau1) + (1-a1)*exp(-t/tau2)) if residual from mono-exp exceeds threshold."
+  }
+}

@@ -56,11 +56,20 @@ PARAM_META = {
                "Affects 'liveliness' and amplitude modulation depth."
     },
     "eq_strength": {
-        "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+        "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
         "unit": "", "group": "timbre",
         "doc": "Spectral EQ strength (LTASE_orig / LTASE_synth ratio). "
-               "0 = off. 1 = full EQ. Currently kept at 0: EQ was computed "
-               "including room acoustics, distorting low-frequency balance."
+               "Captures body resonance: cuts harsh highs, shapes spectral envelope. "
+               "Works together with eq_freq_min — below that frequency EQ is flat. "
+               "0 = bypass. 0.5 = recommended starting point. 1.0 = full correction."
+    },
+    "eq_freq_min": {
+        "default": 400.0, "min": 50.0, "max": 2000.0, "step": 50.0,
+        "unit": "Hz", "group": "timbre",
+        "doc": "EQ lower cutoff frequency. Below this the EQ fades to flat (0 dB). "
+               "Prevents room acoustics contamination from distorting the fundamental. "
+               "400 Hz = safe default (protects k=1 and k=2 of most notes). "
+               "Lower → more EQ correction, but risks cutting the fundamental."
     },
     "soundboard_strength": {
         "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,

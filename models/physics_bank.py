@@ -1,172 +1,98 @@
 """
 models/physics_bank.py
 ──────────────────────
-Physics-Informed Resonator Bank — Phase 1 redesign.
+Physics-Informed Resonator Bank — differentiable, training-ready.
 
-Architecture: additive synthesis with hard-coded physical structure,
-learned physical parameters. No neural controller in this module.
+Physical model per harmonic k = 1..K:
+  f_k    = k · f0 · √(1 + B·k²)            inharmonicity
+  A_k(t) = a1·exp(-t/τ1) + a2·exp(-t/τ2)   bi-exponential decay
+  osc    = Σ_s cos(2π·f_ks·t + φ_s)        N_strings independent oscillators
+  signal = A_k(t) · osc / N_strings
 
-Physical model:
-  For each harmonic k = 1..K:
-    f_k = k · f0 · √(1 + B · k²)                [inharmonicity]
+Beating: strings at f_k + {-Δf, 0, +Δf} (trichord) or {-Δf/2, +Δf/2} (bichord)
+  → natural amplitude modulation from phase interference
 
-    Two string oscillators per harmonic (beating pair):
-      osc_a: f_k + Δf_k/2
-      osc_b: f_k - Δf_k/2
-    → amplitude modulation at Δf_k Hz (beating)
+Soundboard: parametric convolution [0..1]
+  0.0 = bypass (physical soundboard present)
+  1.0 = full virtual body resonance
 
-    Amplitude envelope (bi-exponential):
-      A_k(t) = a1_k · exp(-t/τ1_k) + (1-a1_k) · exp(-t/τ2_k)
-    → τ1 = fast (hammer/early), τ2 = slow (string natural)
-
-  Noise:
-    attack burst: N(0,1) filtered through 16-band shaping → exp(-t/τ_noise) envelope
-    floor:        very low sustained noise
-
-  Synthesizer state (per note, reset each clip):
-    amp_fast[K]:   fast decay amplitudes
-    amp_slow[K]:   slow decay amplitudes
-    phase_a[K]:    phase of string-a oscillator
-    phase_b[K]:    phase of string-b oscillator
-
-Differentiability:
-  All physical parameters (B, τ1, τ2, a1, Δf, A0_k) are nn.Parameters.
-  Can be initialized from analytical extraction (params.json).
-  Frame-by-frame synthesis is differentiable w.r.t. all parameters.
-
-Can be used standalone (physics-only) or driven by a neural controller
-that provides per-frame corrections to decay rates and excitation.
+All physical parameters are nn.Parameter → trainable via gradient.
+Initialized from params.json analytical priors when available.
 """
 
-import math
 import json
+import math
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# ── MIDI helpers ──────────────────────────────────────────────────────────────
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+MIDI_LO = 21
+MIDI_HI = 108
+F0_LO   = 27.5
+F0_HI   = 4186.0
 
-MIDI_LO  = 21    # A0
-MIDI_HI  = 108   # C8
-F0_LO    = 27.5  # Hz
-F0_HI    = 4186. # Hz
+def midi_to_hz_tensor(midi: torch.Tensor) -> torch.Tensor:
+    return 440.0 * torch.pow(2.0, (midi - 69.0) / 12.0)
+
+def n_strings_for_midi(midi: int) -> int:
+    """Number of strings per note (typical grand piano stringing)."""
+    if midi <= 27:   return 1   # lowest bass: monochord
+    elif midi <= 47: return 2   # low-mid: bichord
+    else:            return 3   # upper register: trichord
+
+def _safe_mean(vals: list, default: float) -> float:
+    v = [x for x in vals if x is not None and not math.isnan(x) and not math.isinf(x)]
+    return float(sum(v) / len(v)) if v else default
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Param priors from params.json ─────────────────────────────────────────────
 
-def midi_to_hz(midi: torch.Tensor) -> torch.Tensor:
-    return 440.0 * (2.0 ** ((midi - 69.0) / 12.0))
-
-
-def inharmonic_freqs(f0: torch.Tensor, B: torch.Tensor, K: int) -> torch.Tensor:
+def load_priors(params_path: str, K: int) -> dict:
     """
-    Compute inharmonic partial frequencies.
-    f0: (B_batch,), B_inharmon: (B_batch,)
-    Returns: (B_batch, K)  — frequencies in Hz for k=1..K
-    """
-    ks = torch.arange(1, K + 1, device=f0.device, dtype=f0.dtype)  # (K,)
-    f0_  = f0.unsqueeze(1)   # (B_batch, 1)
-    B_   = B.unsqueeze(1)    # (B_batch, 1)
-    ks_  = ks.unsqueeze(0)   # (1, K)
-    return f0_ * ks_ * torch.sqrt(1.0 + B_ * ks_ ** 2)  # (B_batch, K)
-
-
-# ── Parameter initialization from params.json ────────────────────────────────
-
-def _load_piano_priors(params_path: str, n_harmonic: int, sr: int,
-                       midi_lo: int = MIDI_LO, midi_hi: int = MIDI_HI
-                       ) -> dict:
-    """
-    Load analytical priors from params.json.
-    Returns dict of tensors indexed by MIDI note: {21: {...}, 22: {...}, ...}
-    These become the initialization values for learnable parameters.
+    Read analytical priors from params.json.
+    Returns dict with per-MIDI aggregated parameters.
     """
     if not Path(params_path).exists():
         return {}
-
     with open(params_path) as f:
         data = json.load(f)
-
     samples = data.get('samples', {})
-    priors = {}
 
-    for midi in range(midi_lo, midi_hi + 1):
-        # Average over all velocity layers for this MIDI note
-        B_vals, tau1_k, tau2_k, a1_k, beat_hz_k, beat_depth_k = [], [], [], [], [], []
-        A0_k_list = []
+    # Collect per-MIDI values (averaged over velocity)
+    by_midi = {}
+    for key, s in samples.items():
+        midi = s['midi']
+        if midi not in by_midi:
+            by_midi[midi] = {'B': [], 'tau1': [[] for _ in range(K)],
+                             'tau2': [[] for _ in range(K)], 'a1': [[] for _ in range(K)],
+                             'beat_hz': [[] for _ in range(K)], 'A0': [[] for _ in range(K)]}
+        if s['B'] > 0:
+            by_midi[midi]['B'].append(s['B'])
+        for p in s.get('partials', []):
+            k_idx = p['k'] - 1
+            if k_idx >= K: continue
+            if p.get('tau1'): by_midi[midi]['tau1'][k_idx].append(p['tau1'])
+            if p.get('tau2'): by_midi[midi]['tau2'][k_idx].append(p['tau2'])
+            if p.get('a1') and 0 < p['a1'] < 1: by_midi[midi]['a1'][k_idx].append(p['a1'])
+            if p.get('beat_hz') and p['beat_hz'] > 0.05: by_midi[midi]['beat_hz'][k_idx].append(p['beat_hz'])
+            if p.get('A0') and p['A0'] > 0: by_midi[midi]['A0'][k_idx].append(p['A0'])
 
-        found_any = False
-        for vel in range(8):
-            key = f"m{midi:03d}_vel{vel}"
-            if key not in samples:
-                continue
-            s = samples[key]
-            found_any = True
-            if s['B'] > 0:
-                B_vals.append(s['B'])
-
-            partials = s.get('partials', [])
-            for k_idx in range(n_harmonic):
-                k = k_idx + 1
-                # Find partial with matching k
-                p = next((p for p in partials if p['k'] == k), None)
-
-                # Initialize per-k lists if first velocity
-                while len(tau1_k) <= k_idx:
-                    tau1_k.append([])
-                    tau2_k.append([])
-                    a1_k.append([])
-                    beat_hz_k.append([])
-                    beat_depth_k.append([])
-                    A0_k_list.append([])
-
-                if p is not None:
-                    if p.get('tau1') is not None:
-                        tau1_k[k_idx].append(p['tau1'])
-                    if p.get('tau2') is not None:
-                        tau2_k[k_idx].append(p['tau2'])
-                    if p.get('a1') is not None:
-                        a1_k[k_idx].append(p['a1'])
-                    if p.get('beat_hz') is not None and p['beat_hz'] > 0.05:
-                        beat_hz_k[k_idx].append(p['beat_hz'])
-                    if p.get('beat_depth') is not None:
-                        beat_depth_k[k_idx].append(p['beat_depth'])
-                    if p.get('A0') is not None and p['A0'] > 0:
-                        A0_k_list[k_idx].append(p['A0'])
-
-        if not found_any:
-            continue
-
-        # Average values
-        B_mean = float(_safe_mean(B_vals, 1e-4))
-
-        # Per-partial averages
-        tau1_means  = [float(_safe_mean(v, 0.5)) for v in tau1_k]
-        tau2_means  = [float(_safe_mean(v, 5.0)) for v in tau2_k]
-        a1_means    = [float(_safe_mean(v, 0.3)) for v in a1_k]
-        beat_means  = [float(_safe_mean(v, 0.5)) for v in beat_hz_k]
-        depth_means = [float(_safe_mean(v, 0.1)) for v in beat_depth_k]
-        A0_means    = [float(_safe_mean(v, 0.1 / (k + 1))) for k, v in enumerate(A0_k_list)]
-
-        priors[midi] = {
-            'B': B_mean,
-            'tau1': tau1_means,
-            'tau2': tau2_means,
-            'a1': a1_means,
-            'beat_hz': beat_means,
-            'beat_depth': depth_means,
-            'A0': A0_means,
+    # Average
+    out = {}
+    for midi, d in by_midi.items():
+        out[midi] = {
+            'B': _safe_mean(d['B'], 1e-4),
+            'tau1':    [_safe_mean(v, 0.3 + 0.1 * i) for i, v in enumerate(d['tau1'])],
+            'tau2':    [_safe_mean(v, max(5.0 - i * 0.05, 0.1)) for i, v in enumerate(d['tau2'])],
+            'a1':      [_safe_mean(v, 0.25) for v in d['a1']],
+            'beat_hz': [_safe_mean(v, 0.4 + 0.02 * i) for i, v in enumerate(d['beat_hz'])],
+            'A0':      [_safe_mean(v, max(1.0 / (i + 1), 1e-4)) for i, v in enumerate(d['A0'])],
         }
-
-    return priors
-
-
-def _safe_mean(vals: list, default: float) -> float:
-    vals = [v for v in vals if v is not None and not math.isnan(v) and not math.isinf(v)]
-    return sum(vals) / len(vals) if vals else default
+    return out
 
 
 # ── Physics Bank ──────────────────────────────────────────────────────────────
@@ -175,365 +101,365 @@ class PhysicsResonatorBank(nn.Module):
     """
     Differentiable physics-informed piano synthesizer.
 
-    Parameters are either:
-      a) Initialized from params.json analytical extraction, then fine-tuned by gradient
-      b) Initialized from physics priors and learned from scratch
+    Parameters (all learnable):
+      log_B_slope, log_B_intercept : B(midi_norm) = exp(slope*midi_norm + intercept)
+      log_tau1[K]  : fast decay time per partial (hammer/early)
+      log_tau2[K]  : slow decay time per partial (string natural)
+      logit_a1[K]  : fast/slow mixing ratio (sigmoid → [0,1])
+      log_beat_hz[K]: string detuning (Hz) for beating
+      log_A0[K]    : partial amplitude spectrum (in log space)
+      harm_detune[K]: systematic ±0.5% per-partial tuning correction
+      log_noise_level: noise amplitude relative to harmonic
+      log_tau_noise  : noise attack decay time
+      log_soundboard[n_sb_taps]: learnable soundboard IR taps (FIR)
+      soundboard_strength       : scalar [0..1] (parametric mix)
 
-    Forward signature (single-instrument mode):
-      audio = bank.forward(f0, vel_norm, n_frames, state=None)
-
-    Forward with controller corrections:
-      audio = bank.forward(f0, vel_norm, n_frames, ctrl_dict, state=None)
-      ctrl_dict keys: 'delta_log_tau1', 'delta_log_tau2', 'delta_exc', 'delta_beat'
+    Forward args:
+      f0       : (B,)  fundamental Hz
+      vel_norm : (B,)  velocity [0..1]
+      n_frames : int   number of synthesis frames
+      ctrl     : optional dict of per-frame controller corrections
     """
 
     def __init__(self, cfg: dict, params_path: str = None):
         super().__init__()
 
         pc = cfg.get('physics', {})
-        self.K          = int(pc.get('n_harmonic', 80))        # harmonic count
+        self.K          = int(pc.get('n_harmonic', 80))
         self.sr         = int(cfg.get('sample_rate', 44100))
         self.frame_size = int(cfg.get('frame_size', 256))
         self.dt         = self.frame_size / self.sr
 
-        # ── Inharmonicity ─────────────────────────────────────────────
-        # B(midi) = exp(log_B_slope * midi_norm + log_B_intercept)
-        # Initialized from data or from physics prior (bass high, treble low)
-        self.log_B_slope     = nn.Parameter(torch.tensor(-2.0))   # B decreases with midi
-        self.log_B_intercept = nn.Parameter(torch.tensor(-7.5))   # log(B) at MIDI 21
-        # B_lo (bass A0): exp(-7.5) ≈ 0.00055, B_hi (treble C8): exp(-7.5 + (-2)*(87/87)) ≈ 0.000075
+        # ── Inharmonicity: B(midi_norm) = exp(slope*x + intercept) ───
+        self.log_B_slope     = nn.Parameter(torch.tensor(-2.0))
+        self.log_B_intercept = nn.Parameter(torch.tensor(-7.5))
 
-        # ── Per-partial parameters (averaged over keyboard) ───────────
-        # These are learned globally but can be conditioned on MIDI via the controller.
+        K = self.K
 
-        # log τ1: fast decay (hammer/early), init ~0.3s
-        self.log_tau1 = nn.Parameter(
-            torch.linspace(math.log(0.4), math.log(0.05), self.K)
-        )
-        # log τ2: slow decay (string), init ~4s decreasing with harmonic number
-        self.log_tau2 = nn.Parameter(
-            torch.linspace(math.log(5.0), math.log(0.3), self.K)
-        )
-        # a1: mixing ratio (fast component), init 0.2 for low k, 0.5 for high k
-        self.logit_a1 = nn.Parameter(
-            torch.linspace(-1.4, 0.0, self.K)  # sigmoid → 0.20..0.50
-        )
+        # ── Bi-exponential decay ──────────────────────────────────────
+        # τ1 (fast, 0.01–5s): decreases with harmonic number
+        log_tau1_init = torch.linspace(math.log(0.4), math.log(0.05), K)
+        # τ2 (slow, 0.05–60s): decreases faster with harmonic number
+        log_tau2_init = torch.linspace(math.log(5.0), math.log(0.3), K)
+        # a1 (fast mixing, 0.1–0.5): more fast component at high k
+        logit_a1_init = torch.linspace(-1.4, 0.0, K)  # sigmoid(-1.4)≈0.20, sigmoid(0)=0.50
 
-        # ── Beating (string coupling) ─────────────────────────────────
-        # log Δf: beating frequency in Hz, init ~0.3 Hz for bass, ~1 Hz for treble
-        self.log_beat_hz = nn.Parameter(
-            torch.linspace(math.log(0.3), math.log(1.5), self.K)
-        )
-        # beat_depth: modulation index, init 0.15
-        self.logit_beat_depth = nn.Parameter(
-            torch.full((self.K,), -1.7)  # sigmoid → ~0.15
-        )
+        self.log_tau1  = nn.Parameter(log_tau1_init)
+        self.log_tau2  = nn.Parameter(log_tau2_init)
+        self.logit_a1  = nn.Parameter(logit_a1_init)
+
+        # ── Beating (string-to-string detuning) ──────────────────────
+        # Δf range: 0.05–10 Hz, init: gradually increasing with k
+        log_beat_init = torch.linspace(math.log(0.3), math.log(1.5), K)
+        self.log_beat_hz = nn.Parameter(log_beat_init)
 
         # ── Amplitude spectrum ────────────────────────────────────────
-        # log A0[k]: relative amplitude of harmonic k (normalized so k=1 ≈ 1.0)
-        # Init: roughly 1/k spectrum (bright piano)
-        self.log_A0 = nn.Parameter(
-            -torch.log(torch.arange(1, self.K + 1).float()) * 0.7
-        )
+        # log_A0[k]: unnormalized log amplitude. Softmax → normalized spectrum.
+        # Init: ~1/k^0.7 (bright piano)
+        log_A0_init = -torch.log(torch.arange(1, K + 1).float()) * 0.7
+        self.log_A0 = nn.Parameter(log_A0_init)
 
-        # ── Per-partial systematic tuning deviation ───────────────────
-        # Small per-partial frequency correction (±0.5%)
-        self.harm_detune = nn.Parameter(torch.zeros(self.K))
+        # Per-partial systematic tuning deviation (±0.5%)
+        self.harm_detune = nn.Parameter(torch.zeros(K))
 
-        # ── Noise model ───────────────────────────────────────────────
-        self.n_noise_bands = int(pc.get('n_noise_bands', 16))
-        # Log-spaced band frequencies (Hz)
-        self.register_buffer(
-            'noise_freqs',
-            torch.exp(torch.linspace(math.log(200), math.log(20000), self.n_noise_bands))
-        )
-        # Per-band gain (learnable)
-        self.noise_band_gain = nn.Parameter(torch.zeros(self.n_noise_bands))
-        # Attack noise decay time (log τ_noise)
-        self.log_tau_noise = nn.Parameter(torch.tensor(math.log(0.05)))
-        # Noise level (relative to harmonic)
-        self.log_noise_level = nn.Parameter(torch.tensor(math.log(0.08)))
+        # ── Noise ─────────────────────────────────────────────────────
+        self.log_noise_level = nn.Parameter(torch.tensor(math.log(0.06)))
+        self.log_tau_noise   = nn.Parameter(torch.tensor(math.log(0.05)))
+        # First-order IIR shaping pole (0 = no shaping, near 1 = strong LPF)
+        self.noise_pole      = nn.Parameter(torch.tensor(0.85))
 
-        # ── Stereo panning ────────────────────────────────────────────
-        # Pan per partial: log(stereo_width), simple linear spread
-        pan_norm = (torch.arange(self.K).float() / max(self.K - 1, 1)) * 2 - 1  # -1..+1
-        self.register_buffer('pan_init', pan_norm * 0.1)  # subtle spread
-        self.pan_scale = nn.Parameter(torch.tensor(0.0))  # learned width
+        # ── Soundboard (parametric FIR) ───────────────────────────────
+        n_sb = int(pc.get('n_soundboard_taps', 256))
+        self.n_sb = n_sb
+        # Initialize as delta (no effect), then learned
+        sb_init = torch.zeros(n_sb)
+        sb_init[0] = 1.0  # delta function → unity passthrough initially
+        self.soundboard_ir   = nn.Parameter(sb_init)
+        # Strength: 0.0 = bypass, 1.0 = full
+        # Use sigmoid(raw) for stability
+        self.soundboard_raw  = nn.Parameter(torch.tensor(-0.6))  # sigmoid≈0.35
 
-        # ── Load priors from params.json ──────────────────────────────
-        if params_path is not None and Path(params_path).exists():
+        # ── Load priors ────────────────────────────────────────────────
+        if params_path is not None:
             self._init_from_params(params_path)
 
+    # ── Initialization from analytical priors ─────────────────────────────────
+
     def _init_from_params(self, params_path: str):
-        """Initialize learnable parameters from analytically extracted priors."""
-        priors = _load_piano_priors(params_path, self.K, self.sr)
+        priors = load_priors(params_path, self.K)
         if not priors:
+            print(f"[PhysicsBank] No priors found in {params_path}")
             return
 
-        # Fit B(midi) log-linear model
-        midis = sorted(priors.keys())
-        B_vals = [priors[m]['B'] for m in midis]
-        B_valid = [(m, b) for m, b in zip(midis, B_vals) if b > 0]
-        if len(B_valid) >= 4:
-            ms = torch.tensor([m for m, _ in B_valid], dtype=torch.float32)
-            bs = torch.tensor([math.log(b) for _, b in B_valid], dtype=torch.float32)
-            ms_norm = (ms - MIDI_LO) / (MIDI_HI - MIDI_LO)
-            # log(B) = slope * midi_norm + intercept
-            A = torch.stack([ms_norm, torch.ones_like(ms_norm)], dim=1)
-            # Least squares
-            coef, _ = torch.lstsq(bs.unsqueeze(1), A) if hasattr(torch, 'lstsq') else (None, None)
-            if coef is not None:
-                with torch.no_grad():
-                    self.log_B_slope.fill_(float(coef[0]))
-                    self.log_B_intercept.fill_(float(coef[1]))
+        # Fit B(midi) log-linear: log(B) = slope * midi_norm + intercept
+        midi_vals = sorted(priors.keys())
+        B_vals = [(m, priors[m]['B']) for m in midi_vals if priors[m]['B'] > 1e-7]
+        if len(B_vals) >= 4:
+            ms = torch.tensor([(m - MIDI_LO) / (MIDI_HI - MIDI_LO) for m, _ in B_vals])
+            bs = torch.tensor([math.log(b) for _, b in B_vals])
+            # Least squares: [slope, intercept]
+            A = torch.stack([ms, torch.ones_like(ms)], dim=1)
+            sol = torch.linalg.lstsq(A, bs.unsqueeze(1)).solution
+            with torch.no_grad():
+                self.log_B_slope.fill_(float(sol[0]))
+                self.log_B_intercept.fill_(float(sol[1]))
 
-        # Average per-partial params over all MIDI notes (weighted by amp)
-        tau1_agg  = [[] for _ in range(self.K)]
-        tau2_agg  = [[] for _ in range(self.K)]
-        a1_agg    = [[] for _ in range(self.K)]
-        beat_agg  = [[] for _ in range(self.K)]
-        depth_agg = [[] for _ in range(self.K)]
-        A0_agg    = [[] for _ in range(self.K)]
+        # Average per-partial params over all MIDI notes
+        tau1_by_k  = [[] for _ in range(self.K)]
+        tau2_by_k  = [[] for _ in range(self.K)]
+        a1_by_k    = [[] for _ in range(self.K)]
+        beat_by_k  = [[] for _ in range(self.K)]
+        A0_by_k    = [[] for _ in range(self.K)]
 
         for midi, p in priors.items():
-            for k_idx in range(min(self.K, len(p['tau1']))):
-                if p['tau1'][k_idx] > 0:
-                    tau1_agg[k_idx].append(p['tau1'][k_idx])
-                if len(p['tau2']) > k_idx and p['tau2'][k_idx] > 0:
-                    tau2_agg[k_idx].append(p['tau2'][k_idx])
-                if len(p['a1']) > k_idx and 0 < p['a1'][k_idx] < 1:
-                    a1_agg[k_idx].append(p['a1'][k_idx])
-                if len(p['beat_hz']) > k_idx and p['beat_hz'][k_idx] > 0:
-                    beat_agg[k_idx].append(p['beat_hz'][k_idx])
-                if len(p['beat_depth']) > k_idx and p['beat_depth'][k_idx] > 0:
-                    depth_agg[k_idx].append(p['beat_depth'][k_idx])
-                if len(p['A0']) > k_idx and p['A0'][k_idx] > 0:
-                    A0_agg[k_idx].append(p['A0'][k_idx])
+            for k_idx in range(self.K):
+                if k_idx < len(p['tau1']) and p['tau1'][k_idx] > 0:
+                    tau1_by_k[k_idx].append(p['tau1'][k_idx])
+                if k_idx < len(p['tau2']) and p['tau2'][k_idx] > 0:
+                    tau2_by_k[k_idx].append(p['tau2'][k_idx])
+                if k_idx < len(p['a1']) and 0 < p['a1'][k_idx] < 1:
+                    a1_by_k[k_idx].append(p['a1'][k_idx])
+                if k_idx < len(p['beat_hz']) and p['beat_hz'][k_idx] > 0:
+                    beat_by_k[k_idx].append(p['beat_hz'][k_idx])
+                if k_idx < len(p['A0']) and p['A0'][k_idx] > 0:
+                    A0_by_k[k_idx].append(p['A0'][k_idx])
 
         with torch.no_grad():
             for k_idx in range(self.K):
-                if tau1_agg[k_idx]:
-                    v = _safe_mean(tau1_agg[k_idx], 0.3)
+                if tau1_by_k[k_idx]:
+                    v = _safe_mean(tau1_by_k[k_idx], 0.3)
                     self.log_tau1[k_idx] = math.log(max(v, 0.01))
-                if tau2_agg[k_idx]:
-                    v = _safe_mean(tau2_agg[k_idx], 3.0)
+                if tau2_by_k[k_idx]:
+                    v = _safe_mean(tau2_by_k[k_idx], 3.0)
                     self.log_tau2[k_idx] = math.log(max(v, 0.05))
-                if a1_agg[k_idx]:
-                    v = _safe_mean(a1_agg[k_idx], 0.25)
-                    v = max(0.01, min(0.99, v))
+                if a1_by_k[k_idx]:
+                    v = _safe_mean(a1_by_k[k_idx], 0.25)
+                    v = max(0.02, min(0.98, v))
                     self.logit_a1[k_idx] = math.log(v / (1 - v))
-                if beat_agg[k_idx]:
-                    v = _safe_mean(beat_agg[k_idx], 0.5)
+                if beat_by_k[k_idx]:
+                    v = _safe_mean(beat_by_k[k_idx], 0.5)
                     self.log_beat_hz[k_idx] = math.log(max(v, 0.05))
-                if depth_agg[k_idx]:
-                    v = _safe_mean(depth_agg[k_idx], 0.15)
-                    v = max(0.01, min(0.99, v))
-                    self.logit_beat_depth[k_idx] = math.log(v / (1 - v))
+                # A0 spectrum from relative amplitudes (normalize to k=1)
+                if A0_by_k[0] and A0_by_k[k_idx]:
+                    A0_ref = _safe_mean(A0_by_k[0], 1.0)
+                    A0_k   = _safe_mean(A0_by_k[k_idx], max(1.0 / (k_idx + 1), 1e-4))
+                    ratio  = A0_k / max(A0_ref, 1e-10)
+                    if ratio > 0:
+                        self.log_A0[k_idx] = math.log(max(ratio, 1e-6))
 
         print(f"[PhysicsBank] Initialized from {params_path} ({len(priors)} MIDI notes)")
 
-    # ── Inharmonicity ────────────────────────────────────────────────────────
+    # ── Physical parameter accessors ──────────────────────────────────────────
 
     def get_B(self, midi_norm: torch.Tensor) -> torch.Tensor:
-        """B(midi_norm) = exp(slope * midi_norm + intercept). midi_norm in [0,1]."""
+        """B(midi_norm) = exp(slope*x + intercept), clamped to [1e-6, 1e-2]."""
         log_B = self.log_B_slope * midi_norm + self.log_B_intercept
-        return torch.exp(log_B.clamp(-14, -4))  # B in [1e-6, 1e-2]
+        return torch.exp(log_B.clamp(-14.0, -4.6))
 
-    # ── Synthesis ────────────────────────────────────────────────────────────
+    def get_inharmonic_freqs(self, f0: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        """
+        f_k = k · f0 · √(1 + B·k²)
+        Returns (B_batch, K)
+        """
+        K  = self.K
+        ks = torch.arange(1, K + 1, device=f0.device, dtype=f0.dtype)
+        f0_e = f0.unsqueeze(1)    # (B, 1)
+        B_e  = B.unsqueeze(1)     # (B, 1)
+        ks_e = ks.unsqueeze(0)    # (1, K)
+        return f0_e * ks_e * torch.sqrt(1.0 + B_e * ks_e ** 2)  # (B, K)
+
+    # ── Forward (vectorized) ──────────────────────────────────────────────────
 
     def forward(
         self,
-        f0:        torch.Tensor,  # (B,) fundamental Hz
-        vel_norm:  torch.Tensor,  # (B,) velocity in [0, 1]
-        n_frames:  int,
-        ctrl:      dict = None,   # optional controller corrections
-        state:     dict = None,   # optional state dict for stateful synthesis
-    ) -> tuple[torch.Tensor, dict]:
+        f0:       torch.Tensor,   # (B,)  Hz
+        vel_norm: torch.Tensor,   # (B,)  [0, 1]
+        n_frames: int,
+        ctrl:     dict = None,    # optional per-frame controller corrections
+    ) -> torch.Tensor:
         """
-        Synthesize audio.
+        Synthesize audio (fully vectorized, differentiable).
 
-        Returns:
-            audio: (B, 2, n_frames * frame_size)  stereo
-            state: dict with final resonator state (for continuation)
+        Returns: (B, 1, T*S)  mono audio, S = frame_size
         """
         B_batch = f0.shape[0]
         device  = f0.device
-        T       = n_frames
-        S       = self.frame_size
         K       = self.K
+        S       = self.frame_size
+        T       = n_frames
 
         # ── Physical parameters ──────────────────────────────────────
-        midi_norm = (torch.log(f0.clamp(F0_LO, F0_HI)) - math.log(F0_LO)) / \
-                    (math.log(F0_HI) - math.log(F0_LO))   # (B,)
+        midi_norm = ((torch.log(f0.clamp(F0_LO, F0_HI)) - math.log(F0_LO)) /
+                     (math.log(F0_HI) - math.log(F0_LO)))   # (B,)
+        B_val = self.get_B(midi_norm)                         # (B,)
 
-        B_val = self.get_B(midi_norm)                      # (B,)
-        f_k   = inharmonic_freqs(f0, B_val, K)             # (B, K)
+        # Inharmonic frequencies + per-partial detune
+        f_k = self.get_inharmonic_freqs(f0, B_val)            # (B, K)
+        detune = torch.tanh(self.harm_detune) * 0.005
+        f_k = f_k * (1.0 + detune)                            # (B, K)
 
-        # Apply per-partial systematic tuning (±0.5%)
-        detune = torch.tanh(self.harm_detune) * 0.005      # (K,)
-        f_k    = f_k * (1.0 + detune.unsqueeze(0))         # (B, K)
+        # Decay
+        tau1 = torch.exp(self.log_tau1).clamp(0.01, 5.0)      # (K,)
+        tau2 = torch.exp(self.log_tau2).clamp(0.05, 60.0)     # (K,)
+        a1   = torch.sigmoid(self.logit_a1)                    # (K,)
+        a2   = 1.0 - a1
 
-        # Decay parameters
-        tau1  = torch.exp(self.log_tau1).clamp(0.01, 5.0)    # (K,)
-        tau2  = torch.exp(self.log_tau2).clamp(0.05, 60.0)   # (K,)
-        a1    = torch.sigmoid(self.logit_a1)                  # (K,)
-        a2    = 1.0 - a1                                      # (K,)
+        # Beating offset
+        beat_hz = torch.exp(self.log_beat_hz).clamp(0.05, 10.0)  # (K,)
 
-        # Beating
-        beat_hz    = torch.exp(self.log_beat_hz).clamp(0.05, 10.0)  # (K,)
-        beat_depth = torch.sigmoid(self.logit_beat_depth)            # (K,)
+        # Amplitude spectrum (normalized, velocity-dependent brightness)
+        A0_raw = F.softmax(self.log_A0, dim=0) * K             # (K,)
+        vel_   = vel_norm.unsqueeze(1)                          # (B, 1)
+        k_norm = torch.arange(1, K + 1, device=device, dtype=f0.dtype) / K
+        vel_bright = vel_ * k_norm                              # (B, K): emphasize high k at high vel
+        A0 = A0_raw * (0.5 + 0.5 * (1.0 + vel_bright))         # (B, K)
 
-        # Amplitude spectrum
-        A0 = torch.softmax(self.log_A0, dim=0) * K       # (K,) normalized, sum=K
-        # Velocity scaling: louder → brighter (emphasize high k)
-        vel_bright = vel_norm.unsqueeze(1) * torch.arange(1, K + 1, device=device, dtype=torch.float32).unsqueeze(0) / K
-        A0 = A0.unsqueeze(0) * (0.3 + 0.7 * (1.0 + vel_bright))  # (B, K)
+        # ── Build time axis for ALL samples at once ──────────────────
+        # t[i] = time of sample i  (0..T*S-1) / sr
+        t_all = torch.arange(T * S, device=device, dtype=f0.dtype) / self.sr  # (T*S,)
 
-        # ── Initialize state ─────────────────────────────────────────
-        if state is None:
-            # amp_fast[k] = a1[k] * A0[k]  (fast decay component)
-            amp_fast  = a1.unsqueeze(0) * A0                  # (B, K)
-            amp_slow  = a2.unsqueeze(0) * A0                  # (B, K)
-            # Phase: random initial phase per partial per string
-            phase_a   = torch.rand(B_batch, K, device=device) * 2 * math.pi
-            phase_b   = torch.rand(B_batch, K, device=device) * 2 * math.pi
+        # ── Apply controller corrections (if provided) ────────────────
+        # ctrl['delta_log_tau1']: (B, T, K) — per-frame tau1 correction
+        # ctrl['delta_exc']:      (B, T, K) — per-frame amplitude injection
+        # For simplicity: apply time-averaged correction from ctrl
+        tau1_eff = tau1  # (K,)
+        tau2_eff = tau2
+        exc_injection = None
+        if ctrl is not None:
+            if 'delta_log_tau1' in ctrl:
+                # (B, T, K) → average over T for now
+                tau1_eff = tau1 * torch.exp(ctrl['delta_log_tau1'].mean(dim=1))  # (B, K)
+            if 'delta_exc' in ctrl:
+                exc_injection = F.softplus(ctrl['delta_exc'])  # (B, T, K)
+
+        # ── Bi-exponential amplitude envelopes ───────────────────────
+        # A(t) = a1 * exp(-t/tau1) + a2 * exp(-t/tau2)
+        # Shape: (B, K, T*S) — one envelope per partial per batch
+
+        # tau1_eff shape: (K,) or (B, K)
+        if tau1_eff.dim() == 1:
+            # (K,) → (1, K, 1) for broadcasting with t_all (T*S,)
+            e_fast = torch.exp(-t_all.view(1, 1, -1) / tau1_eff.view(1, K, 1))  # (1, K, T*S)
+            e_slow = torch.exp(-t_all.view(1, 1, -1) / tau2_eff.view(1, K, 1))  # (1, K, T*S)
+            env = (a1.view(1, K, 1) * e_fast + a2.view(1, K, 1) * e_slow)       # (1, K, T*S)
+            env = env * A0.unsqueeze(2)                                            # (B, K, T*S)
         else:
-            amp_fast = state['amp_fast']
-            amp_slow = state['amp_slow']
-            phase_a  = state['phase_a']
-            phase_b  = state['phase_b']
+            # (B, K) tau1_eff
+            e_fast = torch.exp(-t_all.view(1, 1, -1) / tau1_eff.unsqueeze(2))
+            e_slow = torch.exp(-t_all.view(1, 1, -1) / tau2_eff.view(1, K, 1))
+            env = a1.view(1, K, 1) * e_fast + a2.view(1, K, 1) * e_slow
+            env = env * A0.unsqueeze(2)
 
-        # ── Decay rates per dt ────────────────────────────────────────
-        decay_fast = torch.exp(-self.dt / tau1)  # (K,) frame decay factor
-        decay_slow = torch.exp(-self.dt / tau2)  # (K,) frame decay factor
+        # Add excitation injection from controller (attack transient boost)
+        if exc_injection is not None:
+            # exc_injection: (B, T, K). Spread over frame samples with attack shape.
+            # Attack window per frame: decays within the frame
+            s_vec = torch.arange(S, device=device, dtype=f0.dtype) / S
+            atk_win = torch.exp(-s_vec * 4.0)  # fast within-frame decay
+            exc_frames = exc_injection.permute(0, 2, 1)  # (B, K, T)
+            # Expand: (B, K, T*S)
+            exc_expanded = (exc_frames.unsqueeze(-1) * atk_win.view(1, 1, 1, S)
+                            ).reshape(B_batch, K, T * S)
+            env = env + exc_expanded
 
-        # ── Frequencies for both string oscillators ───────────────────
-        # String a: f_k + beat_hz/2
-        # String b: f_k - beat_hz/2
-        beat_offset = beat_hz.unsqueeze(0) / 2.0   # (1, K)
-        f_a = f_k + beat_offset                     # (B, K) — string a
-        f_b = f_k - beat_offset                     # (B, K) — string b
+        # ── Multi-string oscillators ──────────────────────────────────
+        # String offsets: 1 string = [0], 2 strings = [-½, +½], 3 strings = [-1, 0, +1]
+        # Offsets are in units of beat_hz — approximation (real pianos have asymmetric tuning)
 
-        # Phase advance per sample
-        dphi_a = 2.0 * math.pi * f_a / self.sr    # (B, K)
-        dphi_b = 2.0 * math.pi * f_b / self.sr    # (B, K)
+        # We synthesize using 3 oscillators always; for monochord notes,
+        # beat_hz is set to near 0 so all 3 collapse to same frequency.
+        # This avoids branching and is differentiable.
 
-        # ── Panning ──────────────────────────────────────────────────
-        pan = self.pan_init + self.pan_scale * self.pan_init  # (K,)
-        pan = pan.clamp(-1, 1)
-        gain_L = torch.sqrt((1 - pan) / 2.0).unsqueeze(0)  # (1, K)
-        gain_R = torch.sqrt((1 + pan) / 2.0).unsqueeze(0)  # (1, K)
+        # String offsets (3 strings): -beat_hz, 0, +beat_hz
+        beat_ = beat_hz.view(1, K, 1)  # (1, K, 1)
 
-        # ── Frame-by-frame synthesis ──────────────────────────────────
-        # Precompute all frames at once using vector operations
-        # (more efficient than Python loop)
+        # Phase: random per partial per batch
+        # To make differentiable and batch-stable: use fixed phase offset per partial
+        # (phase is not a trainable parameter — it's set at note onset)
+        torch.manual_seed(42)  # reproducible phases for evaluation
+        phi_a = torch.rand(B_batch, K, device=device) * 2 * math.pi
+        phi_b = torch.rand(B_batch, K, device=device) * 2 * math.pi
+        phi_c = torch.rand(B_batch, K, device=device) * 2 * math.pi
 
-        # Build sample time array for all frames
-        # t_rel[f, s] = relative time of sample s in frame f
-        t_samples = torch.arange(S, device=device, dtype=torch.float32)  # (S,)
+        t_ = t_all.view(1, 1, -1)          # (1, 1, T*S)
+        fk_ = f_k.unsqueeze(2)             # (B, K, 1)
 
-        audio_L = torch.zeros(B_batch, T * S, device=device)
-        audio_R = torch.zeros(B_batch, T * S, device=device)
+        osc_a = torch.cos(2 * math.pi * (fk_ - beat_) * t_ + phi_a.unsqueeze(2))
+        osc_b = torch.cos(2 * math.pi * fk_ * t_              + phi_b.unsqueeze(2))
+        osc_c = torch.cos(2 * math.pi * (fk_ + beat_) * t_ + phi_c.unsqueeze(2))
+        osc   = (osc_a + osc_b + osc_c) / 3.0  # (B, K, T*S)
 
-        for f in range(T):
-            # ── Apply controller corrections (if any) ────────────────
-            if ctrl is not None:
-                # ctrl['delta_log_tau1']: (B, K) additive correction to log_tau1
-                # ctrl['delta_exc']:      (B, K) excitation amplitude injection
-                if 'delta_log_tau1' in ctrl:
-                    tau1_eff = tau1 * torch.exp(ctrl['delta_log_tau1'][:, f] if ctrl['delta_log_tau1'].dim() == 3 else ctrl['delta_log_tau1'])
-                    decay_fast_f = torch.exp(-self.dt / tau1_eff.clamp(0.005, 5.0))
-                else:
-                    decay_fast_f = decay_fast  # (K,)
+        # ── Sum partials ──────────────────────────────────────────────
+        harmonic = (env * osc).sum(dim=1)   # (B, T*S)
 
-                if 'delta_exc' in ctrl:
-                    exc = ctrl['delta_exc'][:, f] if ctrl['delta_exc'].dim() == 3 else ctrl['delta_exc']
-                    amp_fast = amp_fast + F.softplus(exc) * a1.unsqueeze(0)
-                    amp_slow = amp_slow + F.softplus(exc) * a2.unsqueeze(0)
-            else:
-                decay_fast_f = decay_fast
-
-            # ── Synthesize current frame ─────────────────────────────
-            # Total amplitude per partial
-            amp = amp_fast + amp_slow  # (B, K)
-
-            # Phase at start of frame for string a and b
-            # phase_a, phase_b: (B, K)
-            # Phase trajectory across frame samples:
-            # phi_a(s) = phase_a + dphi_a * s  for s in 0..S-1
-            phi_a = phase_a.unsqueeze(2) + dphi_a.unsqueeze(2) * t_samples.unsqueeze(0).unsqueeze(0)  # (B, K, S)
-            phi_b = phase_b.unsqueeze(2) + dphi_b.unsqueeze(2) * t_samples.unsqueeze(0).unsqueeze(0)  # (B, K, S)
-
-            # Oscillator signals
-            osc_a = torch.cos(phi_a)  # (B, K, S)
-            osc_b = torch.cos(phi_b)  # (B, K, S)
-            osc   = (osc_a + osc_b) * 0.5  # (B, K, S) — average (beating naturally emerges)
-
-            # Apply amplitude and panning
-            amp_ = amp.unsqueeze(2)       # (B, K, 1)
-            frame_L = (amp_ * gain_L.unsqueeze(2) * osc).sum(dim=1)  # (B, S)
-            frame_R = (amp_ * gain_R.unsqueeze(2) * osc).sum(dim=1)  # (B, S)
-
-            audio_L[:, f * S: (f + 1) * S] = frame_L
-            audio_R[:, f * S: (f + 1) * S] = frame_R
-
-            # ── Update state ─────────────────────────────────────────
-            amp_fast = amp_fast * decay_fast_f  # (B, K)
-            amp_slow = amp_slow * decay_slow    # (B, K)
-            phase_a  = (phase_a + dphi_a * S) % (2 * math.pi)
-            phase_b  = (phase_b + dphi_b * S) % (2 * math.pi)
-
-        # ── Add noise ────────────────────────────────────────────────
-        noise_audio = self._synthesize_noise(B_batch, T * S, device)
-        audio_L = audio_L + noise_audio
-        audio_R = audio_R + noise_audio
-
-        # ── Stack stereo ─────────────────────────────────────────────
-        audio = torch.stack([audio_L, audio_R], dim=1)  # (B, 2, T*S)
-
-        new_state = {
-            'amp_fast': amp_fast,
-            'amp_slow': amp_slow,
-            'phase_a':  phase_a,
-            'phase_b':  phase_b,
-        }
-        return audio, new_state
-
-    def _synthesize_noise(self, B_batch: int, n_samples: int, device) -> torch.Tensor:
-        """
-        Shaped attack noise: broadband burst with exponential decay.
-        Returns (B_batch, n_samples) noise signal.
-        """
-        t = torch.arange(n_samples, device=device, dtype=torch.float32) / self.sr
-
-        # Attack decay envelope
-        tau_noise = torch.exp(self.log_tau_noise).clamp(0.005, 1.0)
-        noise_env = torch.exp(-t / tau_noise)  # (n_samples,)
-
-        # White noise
-        noise_raw = torch.randn(B_batch, n_samples, device=device)
-
-        # Simple IIR shaping per band (approximated as weighted sum of low-passes)
-        # Apply single first-order IIR as primary shaping for efficiency
-        # Real noise shaping would use a filterbank, but this is good enough
+        # ── Noise ─────────────────────────────────────────────────────
         noise_level = torch.exp(self.log_noise_level)
-        noise = noise_raw * noise_env.unsqueeze(0) * noise_level
+        tau_noise   = torch.exp(self.log_tau_noise).clamp(0.005, 1.0)
+        noise_env   = torch.exp(-t_all / tau_noise)  # (T*S,)
 
-        return noise
+        noise_raw = torch.randn(B_batch, T * S, device=device)
+        # Simple IIR shaping (first-order, pole = noise_pole)
+        pole = torch.sigmoid(self.noise_pole) * 0.99  # keep stable
+        noise_shaped = self._apply_iir(noise_raw, pole)
+        noise = noise_shaped * noise_env.unsqueeze(0) * noise_level
 
-    # ── Synthesis with full audio (for evaluation) ────────────────────────────
+        audio = (harmonic + noise).unsqueeze(1)  # (B, 1, T*S)
 
-    def synthesize(self, midi: int, vel_idx: int,
-                   duration: float = 4.0) -> torch.Tensor:
+        # ── Soundboard ────────────────────────────────────────────────
+        strength = torch.sigmoid(self.soundboard_raw)  # (scalar)
+        if strength > 0.01:
+            audio = self._apply_soundboard(audio, strength)
+
+        return audio   # (B, 1, T*S)
+
+    def _apply_iir(self, x: torch.Tensor, pole: torch.Tensor) -> torch.Tensor:
         """
-        Convenience method: synthesize a single note and return CPU audio tensor.
-        Returns (2, n_samples) stereo float32.
+        Apply first-order IIR low-pass (approximate noise shaping) via recurrence.
+        y[n] = (1-pole)*x[n] + pole*y[n-1]
+        Differentiable through pole, but not through x samples (recurrence graph).
         """
-        f0 = torch.tensor([midi_to_hz(torch.tensor(float(midi)))]).float()
-        vel_norm = torch.tensor([vel_idx / 7.0]).float()
-        n_frames = math.ceil(duration * self.sr / self.frame_size)
+        alpha = 1.0 - pole
+        out = torch.zeros_like(x)
+        prev = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+        for i in range(x.shape[1]):
+            prev = alpha * x[:, i] + pole * prev
+            out[:, i] = prev
+        return out
 
+    def _apply_soundboard(self, audio: torch.Tensor, strength: torch.Tensor) -> torch.Tensor:
+        """
+        Apply parametric soundboard FIR convolution.
+        audio: (B, 1, L)
+        strength: scalar ∈ (0, 1)
+        """
+        B_batch, C, L = audio.shape
+        ir = self.soundboard_ir  # (n_sb,)
+
+        # Causal FIR convolution using F.conv1d
+        # Pad left to maintain length (causal)
+        pad = self.n_sb - 1
+        audio_padded = F.pad(audio, (pad, 0))
+        ir_weight = ir.view(1, 1, -1)  # (1, 1, n_sb)
+        wet = F.conv1d(audio_padded, ir_weight, groups=1)  # (B, 1, L)
+
+        return audio + strength * (wet - audio)
+
+    # ── Convenience: synthesize single note ──────────────────────────────────
+
+    @torch.no_grad()
+    def synthesize(self, midi: int, vel_idx: int, duration: float = 4.0) -> torch.Tensor:
+        """Synthesize a single note. Returns (1, n_samples) CPU float32."""
         self.eval()
-        with torch.no_grad():
-            audio, _ = self.forward(f0, vel_norm, n_frames)
-        return audio.squeeze(0)  # (2, n_samples)
+        f0 = torch.tensor([440.0 * 2.0 ** ((midi - 69) / 12.0)])
+        vel = torch.tensor([vel_idx / 7.0])
+        n_frames = math.ceil(duration * self.sr / self.frame_size)
+        audio, *_ = self.forward(f0, vel, n_frames) if False else (self.forward(f0, vel, n_frames),)
+        return audio.squeeze(0).cpu()  # (1, n_samples)
+
+    def synthesize_and_save(self, midi: int, vel_idx: int,
+                            out_path: str, duration: float = 4.0):
+        import soundfile as sf
+        audio = self.synthesize(midi, vel_idx, duration)
+        audio_np = audio.numpy().T  # (n_samples, 1)
+        sf.write(out_path, audio_np, self.sr, subtype='PCM_16')
+        print(f"[PhysicsBank] Saved {out_path}")

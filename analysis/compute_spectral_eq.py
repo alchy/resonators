@@ -93,8 +93,22 @@ def process_sample(key: str):
 
         # Align lengths to the shorter of the two
         n = min(len(orig_mono), len(synth_mono))
-        orig_mono  = orig_mono[:n]
-        synth_mono = synth_mono[:n]
+        orig_mono        = orig_mono[:n]
+        synth_mono       = synth_mono[:n]
+        orig_stereo_trim = orig_stereo[:n].astype(np.float64)
+        synth_stereo_trim= synth_stereo[:n].astype(np.float64)
+
+        # ── Stereo width factor: rms(Side)/rms(Mid) ratio, skip first 100 ms ──
+        # Skip attack transient; measure steady-state stereo spread.
+        skip = int(0.10 * SR)
+        orig_M = (orig_stereo_trim[skip:, 0] + orig_stereo_trim[skip:, 1]) / 2
+        orig_S = (orig_stereo_trim[skip:, 0] - orig_stereo_trim[skip:, 1]) / 2
+        syn_M  = (synth_stereo_trim[skip:, 0] + synth_stereo_trim[skip:, 1]) / 2
+        syn_S  = (synth_stereo_trim[skip:, 0] - synth_stereo_trim[skip:, 1]) / 2
+        rms = lambda x: float(np.sqrt(np.mean(x**2)) + 1e-12)
+        SM_orig  = rms(orig_S) / rms(orig_M)
+        SM_synth = rms(syn_S) / rms(syn_M)
+        width_factor = float(np.clip(SM_orig / SM_synth, 0.2, 8.0))
 
         # ── LTASE via STFT ─────────────────────────────────────────────────
         ltase_orig = _compute_ltase(orig_mono)
@@ -127,11 +141,12 @@ def process_sample(key: str):
 
         max_gain  = eq_gains.max()
         range_db  = eq_gains.max() - eq_gains.min()
-        print(f"  {key} ... EQ peak={max_gain:.1f}dB range={range_db:.1f}dB")
+        print(f"  {key} ... EQ peak={max_gain:.1f}dB range={range_db:.1f}dB  width_factor={width_factor:.3f}")
 
         return key, {
             'freqs_hz': eq_freqs.tolist(),
             'gains_db': eq_gains.tolist(),
+            'stereo_width_factor': width_factor,
         }
 
     except Exception:
