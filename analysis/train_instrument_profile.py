@@ -113,21 +113,21 @@ class InstrumentProfile(nn.Module):
         super().__init__()
         self.B_net       = mlp(MIDI_DIM, hidden, 1)                    # log(B)
         self.dur_net     = mlp(MIDI_DIM, hidden, 1)                    # log(dur)
-        self.tau1_k1_net = mlp(MIDI_DIM + VEL_DIM, hidden, 1)         # log(tau1) for k=1 only
-        self.tau_net     = mlp(MIDI_DIM + K_DIM, hidden, 2)           # log(tau1), log(tau2) for k>1
+        self.tau1_k1_net  = mlp(MIDI_DIM + VEL_DIM, hidden, 1)        # log(tau1) for k=1 only
+        self.tau_ratio_net = mlp(MIDI_DIM + K_DIM, hidden, 1)        # log(tau_k / tau_k1) for k>1
         self.A0_net      = mlp(MIDI_DIM + K_DIM + VEL_DIM, hidden, 1) # log(A0_ratio)
         self.df_net      = mlp(MIDI_DIM + K_DIM, hidden, 1)           # log(df+1)
         self.eq_net      = mlp(MIDI_DIM + FREQ_DIM, hidden, 1)        # gain_db
         self.wf_net      = mlp(MIDI_DIM, hidden, 1)                   # log(width_factor)
 
-    def forward_B(self, mf):            return self.B_net(mf)
-    def forward_dur(self, mf):          return self.dur_net(mf)
-    def forward_tau1_k1(self, mf, vf):  return self.tau1_k1_net(torch.cat([mf, vf], -1))
-    def forward_tau(self, mf, kf):   return self.tau_net(torch.cat([mf, kf], -1))
-    def forward_A0(self, mf, kf, vf): return self.A0_net(torch.cat([mf, kf, vf], -1))
-    def forward_df(self, mf, kf):    return self.df_net(torch.cat([mf, kf], -1))
-    def forward_eq(self, mf, ff):    return self.eq_net(torch.cat([mf, ff], -1))
-    def forward_wf(self, mf):        return self.wf_net(mf)
+    def forward_B(self, mf):                  return self.B_net(mf)
+    def forward_dur(self, mf):                return self.dur_net(mf)
+    def forward_tau1_k1(self, mf, vf):        return self.tau1_k1_net(torch.cat([mf, vf], -1))
+    def forward_tau_ratio(self, mf, kf):      return self.tau_ratio_net(torch.cat([mf, kf], -1))
+    def forward_A0(self, mf, kf, vf):         return self.A0_net(torch.cat([mf, kf, vf], -1))
+    def forward_df(self, mf, kf):             return self.df_net(torch.cat([mf, kf], -1))
+    def forward_eq(self, mf, ff):             return self.eq_net(torch.cat([mf, ff], -1))
+    def forward_wf(self, mf):                 return self.wf_net(mf)
 
 
 # ── Data extraction ───────────────────────────────────────────────────────────
@@ -184,18 +184,26 @@ def build_dataset(samples: dict) -> dict:
         parts = {p["k"]: p for p in s.get("partials", []) if "k" in p}
         a0_k1 = parts.get(1, {}).get("A0") or 0
 
+        # k=1 tau1 needed for ratio computation
+        tau1_k1_val = parts.get(1, {}).get("tau1") or 0
+
         for k, p in parts.items():
             kf = k_feat(k)
 
-            # tau
             t1 = p.get("tau1") or 0
-            t2 = p.get("tau2") or 0
-            if t1 > 0.005:
-                tau_data.append((mf, kf, math.log(t1),
-                                 math.log(max(t2, 0.005)) if t2 > 0.005 else None))
-                # k=1 sustain: separate dedicated dataset
-                if k == 1:
-                    tau1_k1_data.append((mf, vf, math.log(t1)))
+
+            # k=1 sustain: dedicated dataset for tau1_k1_net
+            if k == 1 and t1 > 0.005:
+                tau1_k1_data.append((mf, vf, math.log(t1)))
+
+            # tau ratio for k=2..10: log(tau_k / tau_k1)
+            # vel-independent ratio captures physical decay structure
+            if 2 <= k <= 10 and t1 > 0.005 and tau1_k1_val > 0.005:
+                ratio = t1 / tau1_k1_val
+                if 1e-4 < ratio < 100:
+                    # Cap target to 0.5 (exp(0.5)=1.65x max) — extreme ratios are artifacts
+                    log_r = min(0.5, math.log(ratio))
+                    tau_data.append((mf, kf, log_r))
 
             # A0 ratio (k >= 1, normalised to k=1)
             a0 = p.get("A0") or 0
@@ -225,8 +233,8 @@ def build_dataset(samples: dict) -> dict:
     B_data   = iqr_filter_list(B_data,   1)
     dur_data = iqr_filter_list(dur_data, 1)
     wf_data  = iqr_filter_list(wf_data,  1)
-    # tau: filter on log(tau1) which is index 2
-    tau_data      = iqr_filter_list(tau_data,      2)
+    # tau ratios: use tight IQR (1.5x) — extreme ratio outliers are extraction artifacts
+    tau_data      = iqr_filter_list(tau_data,      2, k_iqr=1.5)
     tau1_k1_data  = iqr_filter_list(tau1_k1_data,  2)
     A0_data       = iqr_filter_list(A0_data,        3)
     df_data  = iqr_filter_list(df_data,  2)
@@ -253,17 +261,12 @@ def build_dataset(samples: dict) -> dict:
         batches["tk1_y"]  = torch.tensor([d[2] for d in tau1_k1_data], dtype=torch.float32)
 
     if tau_data:
-        batches["tau_mf"]  = torch.stack([d[0] for d in tau_data])
-        batches["tau_kf"]  = torch.stack([d[1] for d in tau_data])
-        batches["tau_t1"]  = torch.tensor([d[2] for d in tau_data], dtype=torch.float32)
-        # tau2: use tau1 where missing
-        batches["tau_t2"]  = torch.tensor(
-            [d[3] if d[3] is not None else d[2] for d in tau_data], dtype=torch.float32)
-        batches["tau_t2m"] = torch.tensor(
-            [1.0 if d[3] is not None else 0.0 for d in tau_data], dtype=torch.float32)
-        # weight: down-weight noisy high-k partials
-        batches["tau_w"]   = torch.tensor(
-            [1.0 / (1.0 + float(d[1][0]) * 3) for d in tau_data], dtype=torch.float32)
+        batches["tau_mf"] = torch.stack([d[0] for d in tau_data])
+        batches["tau_kf"] = torch.stack([d[1] for d in tau_data])
+        batches["tau_y"]  = torch.tensor([d[2] for d in tau_data], dtype=torch.float32)
+        # weight: down-weight noisier high-k partials slightly
+        batches["tau_w"]  = torch.tensor(
+            [1.0 / (1.0 + float(d[1][0]) * 2) for d in tau_data], dtype=torch.float32)
 
     if A0_data:
         batches["a0_mf"] = torch.stack([d[0] for d in A0_data])
@@ -309,7 +312,10 @@ def train(model: InstrumentProfile, ds: dict, epochs: int = 800,
 
         if "dur_mf" in b:
             pred = model.forward_dur(b["dur_mf"]).squeeze(-1)
-            terms.append(nn.functional.mse_loss(pred, b["dur_y"]))
+            # Weight longer notes more — bass sustain (20-30s) must not be averaged down
+            dur_w = torch.exp(b["dur_y"] * 0.1)
+            dur_w = dur_w / dur_w.mean()
+            terms.append((dur_w * (pred - b["dur_y"]) ** 2).mean())
 
         if "wf_mf" in b:
             pred = model.forward_wf(b["wf_mf"]).squeeze(-1)
@@ -321,10 +327,9 @@ def train(model: InstrumentProfile, ds: dict, epochs: int = 800,
             terms.append(2.0 * nn.functional.mse_loss(pred, b["tk1_y"]))
 
         if "tau_mf" in b:
-            pred = model.forward_tau(b["tau_mf"], b["tau_kf"])  # [N,2]
-            loss_t1 = (b["tau_w"] * (pred[:, 0] - b["tau_t1"]) ** 2).mean()
-            loss_t2 = (b["tau_w"] * b["tau_t2m"] * (pred[:, 1] - b["tau_t2"]) ** 2).mean()
-            terms.append(loss_t1 + 0.5 * loss_t2)
+            pred = model.forward_tau_ratio(b["tau_mf"], b["tau_kf"]).squeeze(-1)
+            # Huber loss: robust to remaining outliers, regresses toward median-like behavior
+            terms.append((b["tau_w"] * nn.functional.huber_loss(pred, b["tau_y"], delta=0.3, reduction='none')).mean())
 
         if "a0_mf" in b:
             pred = model.forward_A0(b["a0_mf"], b["a0_kf"], b["a0_vf"]).squeeze(-1)
@@ -348,14 +353,14 @@ def train(model: InstrumentProfile, ds: dict, epochs: int = 800,
             vf_ref = vel_feat(4)
             vf_batch = vf_ref.unsqueeze(0).expand(len(midi_grid), -1)
 
-            B_grid  = model.forward_B(mf_grid).squeeze(-1)
-            tau_grid = model.forward_tau(mf_grid, kf_batch)[:, 0]
-            a0_grid = model.forward_A0(mf_grid, kf_batch, vf_batch).squeeze(-1)
+            B_grid    = model.forward_B(mf_grid).squeeze(-1)
+            tau1_grid = model.forward_tau1_k1(mf_grid, vf_batch).squeeze(-1)
+            a0_grid   = model.forward_A0(mf_grid, kf_batch, vf_batch).squeeze(-1)
 
             smooth = (
-                (B_grid[1:] - B_grid[:-1]).pow(2).mean() +
-                (tau_grid[1:] - tau_grid[:-1]).pow(2).mean() +
-                (a0_grid[1:] - a0_grid[:-1]).pow(2).mean()
+                (B_grid[1:]    - B_grid[:-1]).pow(2).mean() +
+                (tau1_grid[1:] - tau1_grid[:-1]).pow(2).mean() +
+                (a0_grid[1:]   - a0_grid[:-1]).pow(2).mean()
             )
             terms.append(0.3 * smooth)
 
@@ -431,17 +436,19 @@ def generate_profile(
                     if f_k >= sr / 2:
                         break
 
+                    # tau1: k=1 from dedicated net; k>1 from tau1_k1 * exp(ratio)
+                    tau1_k1 = float(torch.exp(model.forward_tau1_k1(mf, vf)).item())
                     if k == 1:
-                        tau1 = float(torch.exp(model.forward_tau1_k1(mf, vf)).item())
-                        tau2 = float(torch.exp(model.forward_tau(mf, kf)[1]).item())
+                        tau1 = tau1_k1
                     else:
-                        tau_pred = model.forward_tau(mf, kf)
-                        tau1 = float(torch.exp(tau_pred[0]).item())
-                        tau2 = float(torch.exp(tau_pred[1]).item())
+                        log_ratio = float(model.forward_tau_ratio(mf, kf).item())
+                        # Physical cap: tau_k ≤ tau_k1 (no partial decays slower than fundamental)
+                        # Lower bound: tau_k ≥ tau_k1 * exp(-0.3 * log(k)) → natural power-law decay
+                        log_k_bias = -0.3 * math.log(k)   # soft physics prior: ~k^-0.3 decay
+                        log_ratio = max(log_k_bias - 2.0, min(0.0, log_ratio))
+                        tau1 = tau1_k1 * math.exp(log_ratio)
                     tau1 = max(tau1, 0.005)
-                    tau2 = max(tau2, 0.005)
-                    if tau2 >= tau1:
-                        tau2 = None  # only keep tau2 if shorter than tau1
+                    tau2 = None  # bi-exponential tau2 not predicted by NN
 
                     a0_pred = model.forward_A0(mf, kf, vf)
                     a0_ratio = float(torch.exp(a0_pred).item())
@@ -449,7 +456,7 @@ def generate_profile(
                     A0 = a0_ratio  # k=1 A0_ratio = 1.0 by definition
 
                     df_pred = model.forward_df(mf, kf)
-                    df = float(torch.exp(df_pred).item()) - 1.0
+                    df = float(torch.exp(df_pred).item())
                     df = max(df, 0.0)
 
                     entry = {
