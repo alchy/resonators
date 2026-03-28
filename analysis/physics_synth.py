@@ -1,62 +1,169 @@
 """
 analysis/physics_synth.py
 ─────────────────────────
-Phase 1: Pure physical synthesizer using extracted parameters.
+Phase 1+: Pure physical synthesizer with improved beating and soundboard.
 
-Synthesizes a piano note from params.json parameters.
-No neural network — pure physics equations.
+Physical model:
+  Each harmonic k has N_strings independent oscillators (2 or 3 based on MIDI range):
+    osc_i(t) = cos(2π·f_k_i·t + φ_i)
+    where f_k_i = f_k + Δ_i  (Δ_i distributed around 0, sum=0)
 
-This is a benchmark / reference synthesizer that tells us:
-  a) How good analytical parameter extraction is
-  b) What the ceiling quality is for the chosen physical model
-  c) What physics is missing (heard by comparing to real sample)
+  Beating emerges naturally from the sum of independent oscillators.
+  This gives full-depth amplitude modulation (goes from 0 to N_strings * A0)
+  rather than the limited (1 + depth * cos) approximation.
 
-Synthesis model:
-  Audio(t) = Σ_k A_k(t) · cos(2π·f_k·t + φ_k)  [harmonic sum]
-           + noise(t)                              [shaped noise]
-
-Where:
-  f_k   = k · f0 · √(1 + B·k²)                  [inharmonicity]
-  A_k(t) = [a1_k·exp(-t/τ1_k) + (1-a1_k)·exp(-t/τ2_k)]  [bi-exp decay]
-           · [1 + m_k · cos(2π·Δf_k·t + ψ_k)]             [beating modulation]
-  noise(t) = A_noise · exp(-t/τ_noise) · N(t)             [attack burst]
+  Soundboard: parametric convolution [0..1]
+    0.0 = no virtual soundboard (physical soundboard present in hardware)
+    1.0 = full virtual soundboard (no hardware soundboard)
+    Mix: output = dry + soundboard_strength * (convolved - dry)
 
 Usage:
     python analysis/physics_synth.py --params analysis/params.json
-                                     --midi 60 --vel 3
-                                     [--out analysis/synth_m060_vel3.wav]
-                                     [--duration 4.0]
+                                     --midi 60 --vel 3 --duration 6
+                                     [--soundboard 0.5]
+                                     [--compare]
 """
 
 import argparse
 import json
 import math
-import struct
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+from scipy.signal import fftconvolve
+
+
+# ── String count per MIDI note ────────────────────────────────────────────────
+
+def n_strings_for_midi(midi: int) -> int:
+    """
+    Number of strings per note. Approximate typical grand piano stringing.
+    Bass: 1 string (monochord) for lowest ~3 notes
+    Low-mid: 2 strings (bichord)
+    Upper: 3 strings (trichord)
+    """
+    if midi <= 27:      # A0–Eb1: 1 string (wound bass)
+        return 1
+    elif midi <= 48:    # E1–C3: 2 strings (wound)
+        return 2
+    else:               # C#3 upwards: 3 strings
+        return 3
+
+
+# ── Soundboard IR synthesis ───────────────────────────────────────────────────
+
+def make_soundboard_ir(sr: int, duration: float = 0.3,
+                       n_modes: int = 40, seed: int = 42) -> np.ndarray:
+    """
+    Synthesize a plausible piano soundboard impulse response.
+
+    The soundboard (Resonklangboden) has modal resonances in the range ~50–4000 Hz,
+    with most energy below ~800 Hz. Each mode is a damped sinusoid.
+
+    Parameters:
+        sr:       sample rate
+        duration: IR duration (s) — body resonance is typically 0.1–0.5s
+        n_modes:  number of synthetic soundboard modes
+        seed:     for reproducibility
+
+    Returns:
+        ir (n_samples,) float32 — normalized unit-peak IR
+    """
+    rng = np.random.default_rng(seed)
+    n = int(duration * sr)
+    t = np.arange(n, dtype=np.float64) / sr
+    ir = np.zeros(n, dtype=np.float64)
+
+    # Modal frequencies: concentrated below 2000 Hz, sparse above
+    # Typical piano soundboard: dense modes 50-500 Hz, sparser 500-3000 Hz
+    freqs = np.concatenate([
+        rng.uniform(50, 600, n_modes // 2),
+        rng.uniform(600, 3000, n_modes // 4),
+        rng.uniform(3000, 5000, n_modes // 4),
+    ])
+    freqs = freqs[:n_modes]
+
+    # Decay times: longer for low frequencies (quality factor ~50-100)
+    # T60 ≈ Q / (π * f)  — lower freqs ring longer
+    T60 = np.clip(60 / (np.pi * freqs) * 80, 0.02, 0.5)
+
+    # Amplitudes: roughly 1/f spectrum (more energy in bass)
+    amps = 1.0 / (freqs ** 0.5)
+    amps = amps / amps.sum()
+
+    # Random phases
+    phases = rng.uniform(0, 2 * np.pi, n_modes)
+
+    for f, T, A, phi in zip(freqs, T60, amps, phases):
+        tau = T / (2.303)  # T60 → 1/e time
+        ir += A * np.exp(-t / tau) * np.cos(2 * np.pi * f * t + phi)
+
+    # Normalize to unit peak
+    peak = np.abs(ir).max()
+    if peak > 1e-10:
+        ir = ir / peak * 0.5  # scale to 50% of signal peak
+
+    return ir.astype(np.float32)
+
+
+_SOUNDBOARD_IR_CACHE: dict[int, np.ndarray] = {}
+
+
+def get_soundboard_ir(sr: int) -> np.ndarray:
+    if sr not in _SOUNDBOARD_IR_CACHE:
+        _SOUNDBOARD_IR_CACHE[sr] = make_soundboard_ir(sr)
+    return _SOUNDBOARD_IR_CACHE[sr]
+
+
+def apply_soundboard(audio: np.ndarray, sr: int, strength: float) -> np.ndarray:
+    """
+    Apply parametric soundboard convolution.
+
+    strength = 0.0: bypass (hardware has real soundboard)
+    strength = 1.0: full virtual soundboard
+    strength = 0.5: partial contribution (hybrid setup)
+    """
+    if strength < 0.005:
+        return audio
+
+    ir = get_soundboard_ir(sr)
+    wet = fftconvolve(audio, ir, mode='same').astype(np.float64)
+
+    return audio + strength * wet
 
 
 # ── Core synthesis ────────────────────────────────────────────────────────────
 
 def synthesize_note(params: dict, duration: float = None,
                     sr: int = 44100,
-                    fade_out: float = 0.5) -> np.ndarray:
+                    soundboard_strength: float = 0.35,
+                    fade_out: float = 0.5,
+                    rng_seed: int = None) -> np.ndarray:
     """
-    Synthesize a single piano note from extracted physical parameters.
+    Synthesize a piano note using physically correct multi-string beating.
+
+    Key improvement over v1:
+      - N_strings independent oscillators per harmonic (2 or 3 based on MIDI)
+      - Beating emerges from natural sum of independent oscillators
+        → full-depth amplitude modulation (physically correct)
+      - Soundboard convolution with parametric strength [0..1]
 
     Args:
-        params: dict from params.json['samples'][key]
-        duration: total duration in seconds (None = use extracted duration)
-        sr: output sample rate
-        fade_out: fade-out length at end in seconds
+        params:              dict from params.json['samples'][key]
+        duration:            total duration in seconds (None = extracted)
+        sr:                  output sample rate
+        soundboard_strength: [0..1] virtual soundboard mix
+        fade_out:            fade-out duration at end (seconds)
+        rng_seed:            for reproducible output
 
     Returns:
-        mono audio array (float32, normalized)
+        mono audio (float32, normalized to ~0.9)
     """
+    rng = np.random.default_rng(rng_seed)
+
     if duration is None:
-        duration = min(params.get('duration_s', 4.0), 8.0)  # cap at 8s for playback
+        duration = min(params.get('duration_s', 4.0), 8.0)
 
     n_samples = int(duration * sr)
     t = np.arange(n_samples, dtype=np.float64) / sr
@@ -67,87 +174,106 @@ def synthesize_note(params: dict, duration: float = None,
     if not partials:
         return audio.astype(np.float32)
 
-    # Normalize partial amplitudes by peak A0 of k=1
-    A0_ref = partials[0]['A0'] if partials[0]['A0'] else 1.0
-    if A0_ref is None or A0_ref < 1e-10:
-        A0_ref = max((p['A0'] or 0) for p in partials)
-    if A0_ref < 1e-10:
-        A0_ref = 1.0
+    # Reference amplitude (k=1)
+    A0_ref = next((p['A0'] for p in partials if p['A0'] and p['A0'] > 1e-10), 1.0)
 
-    # --- Harmonic sum ---
+    midi = params.get('midi', 60)
+    n_str = n_strings_for_midi(midi)
+
+    # ── Harmonic sum with N_strings independent oscillators ──────────────────
     for p in partials:
-        k = p['k']
-        f_hz = p['f_hz']
-        A0 = p['A0']
+        f_hz  = p['f_hz']
+        A0    = p['A0']
+        k     = p['k']
 
         if A0 is None or A0 < 1e-10 or f_hz > sr / 2 * 0.99:
             continue
 
-        # Amplitude normalization (relative to k=1)
         amp_norm = A0 / A0_ref
 
         # Bi-exponential decay envelope
         tau1 = p.get('tau1') or 3.0
         tau2 = p.get('tau2')
-        a1   = p.get('a1', 1.0)
+        a1   = p.get('a1') or 1.0
         if a1 is None:
             a1 = 1.0
 
         if tau2 is not None and not p.get('mono', True):
-            # Bi-exponential
-            a2 = 1.0 - a1
-            env = a1 * np.exp(-t / tau1) + a2 * np.exp(-t / tau2)
+            env = a1 * np.exp(-t / tau1) + (1 - a1) * np.exp(-t / tau2)
         else:
-            # Single exponential
             env = np.exp(-t / tau1)
 
-        # Beating modulation
+        # ── Multi-string oscillators ─────────────────────────────────────────
         beat_hz = p.get('beat_hz', 0.0) or 0.0
-        beat_depth = p.get('beat_depth', 0.0) or 0.0
-        if beat_hz > 0 and beat_depth > 0.02:
-            psi = np.random.uniform(0, 2 * math.pi)  # random phase for beating
-            beat_env = 1.0 + beat_depth * np.cos(2 * math.pi * beat_hz * t + psi)
-            env = env * beat_env
 
-        # Phase (random initial phase for each partial)
-        phi = np.random.uniform(0, 2 * math.pi)
-        oscillator = np.cos(2 * math.pi * f_hz * t + phi)
+        if n_str == 1 or beat_hz < 0.05:
+            # Single oscillator
+            phi = rng.uniform(0, 2 * math.pi)
+            osc = np.cos(2 * math.pi * f_hz * t + phi)
+            audio += amp_norm * env * osc
 
-        audio += amp_norm * env * oscillator
+        elif n_str == 2:
+            # Two independent strings at f ± beat_hz/2
+            # Beating emerges from their sum naturally (full-depth)
+            phi_a = rng.uniform(0, 2 * math.pi)
+            phi_b = rng.uniform(0, 2 * math.pi)  # independent phase → random beat start
 
-    # --- Noise component (attack burst) ---
+            osc_a = np.cos(2 * math.pi * (f_hz + beat_hz / 2) * t + phi_a)
+            osc_b = np.cos(2 * math.pi * (f_hz - beat_hz / 2) * t + phi_b)
+            osc   = (osc_a + osc_b) * 0.5  # average: same energy as single osc
+
+            audio += amp_norm * env * osc
+
+        else:  # n_str == 3
+            # Three strings: f-Δ, f, f+Δ (symmetric spacing)
+            # Beat pattern: carrier at f, beating at Δ with 3-string modulation
+            # The two outer strings beat against the center: 2×cos(Δt)×cos(f·t)
+            # Plus center at f: gives total = 3-string sum with complex envelope
+
+            phi_a = rng.uniform(0, 2 * math.pi)
+            phi_b = rng.uniform(0, 2 * math.pi)  # center string
+            phi_c = rng.uniform(0, 2 * math.pi)
+
+            delta = beat_hz / 2  # spacing from center to outer strings
+            osc_a = np.cos(2 * math.pi * (f_hz - delta) * t + phi_a)  # string low
+            osc_b = np.cos(2 * math.pi * f_hz * t + phi_b)             # string center
+            osc_c = np.cos(2 * math.pi * (f_hz + delta) * t + phi_c)  # string high
+            osc   = (osc_a + osc_b + osc_c) / 3.0
+
+            audio += amp_norm * env * osc
+
+    # ── Noise (attack burst + floor) ─────────────────────────────────────────
     noise_params = params.get('noise', {})
     tau_noise = noise_params.get('attack_tau_s', 0.05) or 0.05
     floor_rms = noise_params.get('floor_rms', 0.001) or 0.001
+    centroid  = noise_params.get('centroid_hz', 2000.0) or 2000.0
+    slope_db  = noise_params.get('spectral_slope_db_oct', -3.0) or -3.0
 
-    # Attack burst: broadband noise with exponential decay
-    noise_raw = np.random.randn(n_samples)
+    noise_raw = rng.standard_normal(n_samples)
 
-    # Spectral shaping: apply gentle low-pass to make it less white
-    centroid = noise_params.get('centroid_hz', 2000.0) or 2000.0
-    # Simple first-order IIR low-pass approximation
-    alpha = 1.0 - math.exp(-2 * math.pi * centroid / sr)
+    # Two-stage noise shaping: low-pass then tilt
+    alpha_lp = 1.0 - math.exp(-2 * math.pi * centroid / sr)
     noise_shaped = np.zeros_like(noise_raw)
     y = 0.0
     for i in range(n_samples):
-        y = alpha * noise_raw[i] + (1 - alpha) * y
+        y = alpha_lp * noise_raw[i] + (1 - alpha_lp) * y
         noise_shaped[i] = y
 
-    # Noise envelope: attack burst + floor
-    noise_env = np.exp(-t / tau_noise) + floor_rms
+    noise_env    = np.exp(-t / max(tau_noise, 0.001)) + floor_rms
     noise_signal = noise_shaped * noise_env
+    noise_level  = 0.08  # relative to harmonic level
+    audio       += noise_level * noise_signal
 
-    # Mix noise at ~10% of harmonic level
-    noise_level = 0.1
-    audio += noise_level * noise_signal
+    # ── Soundboard ───────────────────────────────────────────────────────────
+    if soundboard_strength > 0.005:
+        audio = apply_soundboard(audio, sr, soundboard_strength)
 
-    # --- Fade out ---
+    # ── Fade out ─────────────────────────────────────────────────────────────
     if fade_out > 0 and duration > fade_out:
-        fade_samples = int(fade_out * sr)
-        fade_win = np.linspace(1.0, 0.0, fade_samples)
-        audio[-fade_samples:] *= fade_win
+        n_fade = int(fade_out * sr)
+        audio[-n_fade:] *= np.linspace(1.0, 0.0, n_fade)
 
-    # --- Normalize ---
+    # ── Normalize ─────────────────────────────────────────────────────────────
     peak = np.abs(audio).max()
     if peak > 1e-10:
         audio = audio / peak * 0.9
@@ -155,10 +281,13 @@ def synthesize_note(params: dict, duration: float = None,
     return audio.astype(np.float32)
 
 
+# ── Convenience functions ─────────────────────────────────────────────────────
+
 def synthesize_and_save(params_path: str, midi: int, vel: int,
-                        out_path: str = None, duration: float = None,
-                        sr: int = 44100) -> str:
-    """Load params and synthesize one note. Returns output path."""
+                        out_path: str = None,
+                        duration: float = None,
+                        sr: int = 44100,
+                        soundboard_strength: float = 0.35) -> str:
     with open(params_path) as f:
         data = json.load(f)
 
@@ -167,112 +296,104 @@ def synthesize_and_save(params_path: str, midi: int, vel: int,
         raise ValueError(f"Key {key} not found in {params_path}")
 
     sample = data['samples'][key]
-    audio = synthesize_note(sample, duration=duration, sr=sr)
+    audio  = synthesize_note(sample, duration=duration, sr=sr,
+                             soundboard_strength=soundboard_strength)
 
     if out_path is None:
         Path('analysis').mkdir(exist_ok=True)
         out_path = f'analysis/synth_{key}.wav'
 
     sf.write(out_path, audio, sr, subtype='PCM_16')
-    print(f"Synthesized {key} -> {out_path}  (dur={len(audio)/sr:.2f}s)")
+    n_str = n_strings_for_midi(midi)
+    print(f"Synthesized {key} ({n_str} strings/harmonic, soundboard={soundboard_strength:.2f}) -> {out_path}")
     return out_path
 
 
-def synthesize_bank_subset(params_path: str, out_dir: str = 'analysis/synth_preview',
-                           sample_midis: list = None, velocities: list = None,
-                           duration: float = 4.0, sr: int = 44100):
-    """
-    Synthesize a subset of notes for listening evaluation.
-    Default: A2, C4, C5, C6, A6 at vel 2,5 — covers register and dynamics.
-    """
-    if sample_midis is None:
-        sample_midis = [45, 57, 60, 69, 72, 81, 93]  # A2, A3, C4, A4, C5, A5, A6
-    if velocities is None:
-        velocities = [2, 5]
-
-    with open(params_path) as f:
-        data = json.load(f)
-
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-
-    for midi in sample_midis:
-        for vel in velocities:
-            key = f"m{midi:03d}_vel{vel}"
-            if key not in data['samples']:
-                print(f"  [skip] {key} not in params")
-                continue
-            sample = data['samples'][key]
-            audio = synthesize_note(sample, duration=duration, sr=sr)
-            out_path = f'{out_dir}/{key}.wav'
-            sf.write(out_path, audio, sr, subtype='PCM_16')
-            print(f"  {key} -> {out_path}")
-
-    print(f"\nPreview set written to {out_dir}/")
-
-
-# ── Comparison utility ────────────────────────────────────────────────────────
-
 def compare_to_original(params_path: str, bank_dir: str,
-                         midi: int, vel: int, out_dir: str = 'analysis'):
-    """
-    Write both original sample and synthesized version for A/B comparison.
-    """
-    sr_target = 44100
+                         midi: int, vel: int,
+                         soundboard_strength: float = 0.35,
+                         out_dir: str = 'analysis'):
     out_dir = Path(out_dir)
     out_dir.mkdir(exist_ok=True)
 
-    # Synthesize
     synth_path = str(out_dir / f'synth_m{midi:03d}_vel{vel}.wav')
-    synthesize_and_save(params_path, midi, vel, synth_path, duration=6.0, sr=sr_target)
+    synthesize_and_save(params_path, midi, vel, synth_path, duration=6.0,
+                        soundboard_strength=soundboard_strength)
 
-    # Copy/trim original
     orig_name = f'm{midi:03d}-vel{vel}-f44.wav'
     orig_path = Path(bank_dir) / orig_name
     if orig_path.exists():
-        import soundfile as sf
         audio_orig, sr_orig = sf.read(str(orig_path), dtype='float32', always_2d=True)
         if audio_orig.shape[1] > 1:
             audio_orig = audio_orig.mean(axis=1)
         else:
             audio_orig = audio_orig[:, 0]
-        # Trim to 6s
         n = min(len(audio_orig), int(6.0 * sr_orig))
         audio_orig = audio_orig[:n]
-        # Normalize
         peak = np.abs(audio_orig).max()
         if peak > 1e-10:
             audio_orig = audio_orig / peak * 0.9
         orig_out = str(out_dir / f'orig_m{midi:03d}_vel{vel}.wav')
         sf.write(orig_out, audio_orig, sr_orig, subtype='PCM_16')
         print(f"Original -> {orig_out}")
-    else:
-        print(f"[WARN] Original not found: {orig_path}")
+
+
+def synthesize_preview_set(params_path: str,
+                           out_dir: str = 'analysis/synth_preview',
+                           soundboard_strength: float = 0.35,
+                           duration: float = 5.0):
+    """Synthesize representative notes for listening evaluation."""
+    # A2, C4, A4, C5, C6, A6 at vel 2 and 5
+    notes = [
+        (45, 2), (45, 5),  # A2 bichord
+        (60, 2), (60, 5),  # C4 trichord
+        (69, 2), (69, 5),  # A4 trichord
+        (81, 2), (81, 5),  # A5 trichord
+        (93, 2), (93, 5),  # A6 trichord
+    ]
+    with open(params_path) as f:
+        data = json.load(f)
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    for midi, vel in notes:
+        key = f"m{midi:03d}_vel{vel}"
+        if key not in data['samples']:
+            continue
+        audio = synthesize_note(data['samples'][key], duration=duration,
+                                soundboard_strength=soundboard_strength)
+        out = f'{out_dir}/{key}.wav'
+        sf.write(out, audio, 44100, subtype='PCM_16')
+        n_str = n_strings_for_midi(midi)
+        print(f"  {key} ({n_str}str) -> {out}")
+    print(f"Preview written to {out_dir}/")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description='Physics-based piano synthesizer from extracted params')
-    parser.add_argument('--params', default='analysis/params.json')
-    parser.add_argument('--midi', type=int, default=60)
-    parser.add_argument('--vel', type=int, default=3)
-    parser.add_argument('--out', default=None, help='Output WAV path')
-    parser.add_argument('--duration', type=float, default=None)
-    parser.add_argument('--sr', type=int, default=44100)
-    parser.add_argument('--preview', action='store_true',
-                        help='Synthesize preview set across keyboard')
-    parser.add_argument('--compare', action='store_true',
-                        help='Also output original sample for A/B comparison')
-    parser.add_argument('--bank', default='C:/SoundBanks/IthacaPlayer/ks-grand')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--params',    default='analysis/params.json')
+    parser.add_argument('--midi',      type=int,   default=60)
+    parser.add_argument('--vel',       type=int,   default=3)
+    parser.add_argument('--out',       default=None)
+    parser.add_argument('--duration',  type=float, default=None)
+    parser.add_argument('--sr',        type=int,   default=44100)
+    parser.add_argument('--soundboard', type=float, default=0.35,
+                        help='Soundboard strength 0.0 (bypass) to 1.0 (full)')
+    parser.add_argument('--compare',   action='store_true')
+    parser.add_argument('--preview',   action='store_true')
+    parser.add_argument('--bank',      default='C:/SoundBanks/IthacaPlayer/ks-grand')
     args = parser.parse_args()
 
     if args.preview:
-        synthesize_bank_subset(args.params, duration=args.duration or 4.0, sr=args.sr)
+        synthesize_preview_set(args.params, soundboard_strength=args.soundboard,
+                               duration=args.duration or 5.0)
     elif args.compare:
-        compare_to_original(args.params, args.bank, args.midi, args.vel)
+        compare_to_original(args.params, args.bank, args.midi, args.vel,
+                            soundboard_strength=args.soundboard)
     else:
         synthesize_and_save(args.params, args.midi, args.vel,
-                            out_path=args.out, duration=args.duration, sr=args.sr)
+                            out_path=args.out, duration=args.duration,
+                            sr=args.sr, soundboard_strength=args.soundboard)
 
 
 if __name__ == '__main__':
