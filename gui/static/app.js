@@ -641,6 +641,8 @@ el('btn-train-ddsp').addEventListener('click', async () => {
     el('btn-train-ddsp').classList.add('hidden');
     el('btn-train-cancel').classList.remove('hidden');
     el('train-progress-wrap').classList.remove('hidden');
+    el('train-log').classList.add('hidden');
+    el('train-log').textContent = '';
     el('train-status').textContent = 'Loading WAV files…';
     trainPollTimer = setInterval(pollTrainStatus, 1000);
   } catch (e) {
@@ -662,10 +664,19 @@ async function pollTrainStatus() {
     el('train-progress-fill').style.width = (j.progress_pct || 0) + '%';
     el('train-progress-label').textContent = `${j.epoch || 0} / ${j.total || 0}`;
 
+    // Update log box
+    const logEl = el('train-log');
+    if (j.log_lines && j.log_lines.length > 0) {
+      logEl.classList.remove('hidden');
+      logEl.textContent = j.log_lines.join('\n');
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
     const etaStr = j.eta_s != null
       ? `  ETA ${j.eta_s >= 60 ? Math.round(j.eta_s/60)+'m' : j.eta_s+'s'}`
       : '';
     const lossStr = j.loss != null ? `  loss=${j.loss.toFixed(4)}` : '';
+    const lrStr   = j.lr   != null ? `  lr=${j.lr.toExponential(1)}` : '';
 
     if (j.status === 'done') {
       clearInterval(trainPollTimer); trainPollTimer = null;
@@ -686,7 +697,7 @@ async function pollTrainStatus() {
       el('train-status').textContent = 'Error: ' + (j.error || 'unknown');
     } else {
       const statusLabel = { loading: 'Loading WAVs…', running: 'Training', saving: 'Saving profile…' };
-      el('train-status').textContent = (statusLabel[j.status] || j.status) + lossStr + etaStr;
+      el('train-status').textContent = (statusLabel[j.status] || j.status) + lossStr + lrStr + etaStr;
     }
   } catch (e) { /* ignore transient fetch errors */ }
 }

@@ -275,6 +275,13 @@ input[type="range"]:hover::-webkit-slider-thumb { background: #00ffaa; }
 .vel-profile-row { display: flex; gap: 0.5rem; align-items: center; margin-top: 4px; }
 .train-row       { display: flex; gap: 0.5rem; align-items: center; }
 .train-actions   { display: flex; gap: 0.5rem; }
+.train-log {
+  font-size: 9px; font-family: monospace; color: #00cc55;
+  background: #000d00; border: 1px solid #0a3a0a;
+  padding: 4px 6px; margin-top: 4px;
+  max-height: 120px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-all;
+}
 
 .progress-bar { display: flex; align-items: center; gap: 0.5rem; }
 .progress-track {

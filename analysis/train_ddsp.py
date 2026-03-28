@@ -255,8 +255,17 @@ def train_ddsp(model: InstrumentProfile, wav_bank: dict,
                   f"lr={sched.get_last_lr()[0]:.2e}")
 
         if progress is not None:
+            current_lr = sched.get_last_lr()[0]
             progress["epoch"] = epoch
             progress["loss"]  = round(avg, 5)
+            progress["lr"]    = float(current_lr)
+            # Append log line every 10 epochs
+            if epoch % 10 == 0:
+                line = f"epoch {epoch:4d}/{epochs}  loss={avg:.5f}  lr={current_lr:.2e}"
+                logs = progress.setdefault("log_lines", [])
+                logs.append(line)
+                if len(logs) > 20:
+                    logs.pop(0)
             if progress.get("cancel"):
                 break
 

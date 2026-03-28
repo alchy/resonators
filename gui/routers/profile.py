@@ -64,7 +64,10 @@ def _run_train(req: TrainRequest):
         if not wav_bank:
             raise RuntimeError(f"No WAV files found in {req.wav_dir}")
 
-        log.info(f"DDSP train: {len(wav_bank)} notes, {req.epochs} epochs")
+        n_notes = len(wav_bank)
+        job["n_notes"]   = n_notes
+        job["log_lines"] = [f"Loaded {n_notes} WAV files  ({req.seg}s segments, sr={req.sr})"]
+        log.info(f"DDSP train: {n_notes} notes, {req.epochs} epochs")
 
         model = InstrumentProfile(hidden=64)
         if req.init and Path(req.init).exists():
@@ -154,14 +157,14 @@ def start_train(body: TrainRequest):
 @router.get("/profile/status")
 def get_train_status():
     j = dict(_job)
-    ep = j.get("epoch", 0)
+    j["log_lines"] = list(_job.get("log_lines", []))  # snapshot
+    ep  = j.get("epoch", 0)
     tot = j.get("total", 1)
     j["progress_pct"] = round(100 * ep / tot) if tot > 0 else 0
-    # ETA estimate
     if j.get("status") == "running" and ep > 5 and "started_at" in j:
         elapsed = time.time() - j["started_at"]
-        eta_s = int(elapsed / ep * (tot - ep))
-        j["eta_s"] = eta_s
+        j["elapsed_s"] = int(elapsed)
+        j["eta_s"]     = int(elapsed / ep * (tot - ep))
     return j
 
 
