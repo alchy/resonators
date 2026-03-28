@@ -130,6 +130,54 @@ def _pan_gains(angle: float) -> tuple:
 
 # ── Core synthesis ────────────────────────────────────────────────────────────
 
+def apply_spectral_eq(audio: np.ndarray, eq_data: dict,
+                      sr: int, strength: float = 1.0) -> np.ndarray:
+    """Apply per-note spectral EQ derived from original sample comparison.
+
+    H(f) = LTASE_original / LTASE_synth captures the soundboard spectral
+    shaping (body resonance boost, high-frequency rolloff) without IR
+    convolution artifacts. Applied identically to L and R channels --
+    spectral coloring is mono, stereo is preserved.
+
+    Args:
+        audio:    (N, 2) stereo float32
+        eq_data:  dict with keys freqs_hz and gains_db (64 log-spaced points)
+        sr:       sample rate
+        strength: [0,1] blend (0=bypass, 1=full EQ)
+
+    Returns: (N, 2) float32
+    """
+    if strength < 0.005 or not eq_data:
+        return audio
+
+    freqs_stored = np.array(eq_data.get("freqs_hz", []), dtype=np.float64)
+    gains_db     = np.array(eq_data.get("gains_db", []), dtype=np.float64)
+    if len(freqs_stored) == 0:
+        return audio
+
+    n = len(audio)
+    # FFT on next power of 2 for efficiency
+    n_fft = 1 << (n - 1).bit_length()
+    freqs_fft = np.fft.rfftfreq(n_fft, d=1.0 / sr)
+
+    # Interpolate stored EQ to FFT grid (linear in log-freq space)
+    gains_linear = 10.0 ** (gains_db / 20.0)
+    H = np.interp(freqs_fft, freqs_stored, gains_linear,
+                  left=gains_linear[0], right=gains_linear[-1])
+
+    # Blend with flat (1.0) according to strength
+    H_blend = 1.0 + strength * (H - 1.0)
+
+    # Apply to each channel independently (same H -- spectral shape is mono)
+    result = np.empty_like(audio)
+    for ch in range(audio.shape[1]):
+        X = np.fft.rfft(audio[:, ch].astype(np.float64), n=n_fft)
+        y = np.fft.irfft(X * H_blend, n=n_fft)
+        result[:, ch] = y[:n].astype(np.float32)
+
+    return result
+
+
 def _string_angles(midi: int, n_str: int, pan_spread: float) -> list:
     """Pan angle per string. Global: bass=left, treble=right (+/-0.20 rad)."""
     center = math.pi / 4 + (midi - 64.5) / 87.0 * 0.20
@@ -147,6 +195,7 @@ def synthesize_note(params: dict,
                     soundboard_strength: float = 0.0,
                     beat_scale: float = 1.0,
                     pan_spread: float = 0.55,
+                    eq_strength: float = 1.0,
                     fade_out: float = 0.5,
                     target_rms: float = 0.06,
                     rng_seed: int = None) -> np.ndarray:
@@ -273,7 +322,21 @@ def synthesize_note(params: dict,
         scale = min(target_rms / rms, 0.95 / max(np.abs(L).max(), np.abs(R).max()))
         L *= scale;  R *= scale
 
-    return np.stack([L, R], axis=1).astype(np.float32)
+    stereo = np.stack([L, R], axis=1).astype(np.float32)
+
+    # Spectral EQ -- "resonant cavity" layer: corrects spectral shape to
+    # match original sample (body resonance, high-frequency rolloff).
+    # Derived per-note from LTASE_original / LTASE_synth in compute_spectral_eq.py
+    eq_data = params.get("spectral_eq")
+    if eq_data and eq_strength > 0.005:
+        stereo = apply_spectral_eq(stereo, eq_data, sr, strength=eq_strength)
+        # Re-normalize after EQ (EQ may shift level despite 0 dB mean target)
+        rms_post = math.sqrt(np.mean(stereo ** 2))
+        if rms_post > 1e-10:
+            scale = min(target_rms / rms_post, 0.95 / np.abs(stereo).max())
+            stereo = stereo * scale
+
+    return stereo
 
     # Reference amplitude (k=1)
     A0_ref = next((p['A0'] for p in partials if p['A0'] and p['A0'] > 1e-10), 1.0)
@@ -389,7 +452,8 @@ def synthesize_and_save(params_path: str, midi: int, vel: int,
                         sr: int = 44100,
                         soundboard_strength: float = 0.0,
                         beat_scale: float = 1.0,
-                        pan_spread: float = 0.55) -> str:
+                        pan_spread: float = 0.55,
+                        eq_strength: float = 1.0) -> str:
     with open(params_path) as f:
         data = json.load(f)
 
@@ -400,7 +464,8 @@ def synthesize_and_save(params_path: str, midi: int, vel: int,
     sample = data['samples'][key]
     audio  = synthesize_note(sample, duration=duration, sr=sr,
                              soundboard_strength=soundboard_strength,
-                             beat_scale=beat_scale, pan_spread=pan_spread)
+                             beat_scale=beat_scale, pan_spread=pan_spread,
+                             eq_strength=eq_strength)
 
     if out_path is None:
         Path('analysis').mkdir(exist_ok=True)
