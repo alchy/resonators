@@ -249,8 +249,8 @@ def build_dataset(samples: dict) -> dict:
                 if ratio > 1e-5:
                     A0_data.append((mf, kf, vf, math.log(ratio)))
 
-            # df (beat Hz)
-            df = p.get("df") or 0
+            # beating (stored as beat_hz in params.json)
+            df = p.get("beat_hz") or p.get("df") or 0
             if df > 0.001:
                 df_data.append((mf, kf, math.log(df)))
 
@@ -555,12 +555,12 @@ def generate_profile(
                     df = max(df, 0.0)
 
                     entry = {
-                        "k":    k,
-                        "f_hz": round(f_k, 4),
-                        "A0":   round(float(A0), 6),
-                        "tau1": round(float(tau1), 6),
-                        "a1":   round(a1_val, 4),
-                        "df":   round(float(df), 6),
+                        "k":      k,
+                        "f_hz":   round(f_k, 4),
+                        "A0":     round(float(A0), 6),
+                        "tau1":   round(float(tau1), 6),
+                        "a1":     round(a1_val, 4),
+                        "beat_hz": round(float(df), 6),
                     }
                     if emit_biexp:
                         entry["tau2"] = round(tau2_val, 6)
