@@ -105,25 +105,41 @@ class InstrumentProfile(nn.Module):
     Factorised network: separate sub-networks for vel-independent
     and vel-dependent parameters.
 
-    tau1_k1_net is dedicated to the fundamental (k=1) decay time which
-    determines perceived sustain. Trained separately from tau_net (all k)
-    to prevent the many short-tau high-k partials from biasing k=1 prediction.
+    tau1_k1_net: fundamental (k=1) decay time — dedicated to avoid bias from
+      the many short-tau high-k partials.
+    noise_net: attack noise model (amplitude, decay, brightness) — vel-dependent
+      because hammer energy and impact character change with velocity.
+    biexp_net: bi-exponential decay coefficients (a1, tau2/tau1) — per-partial,
+      vel-dependent because soft vs. loud strokes have different initial transient.
     """
     def __init__(self, hidden: int = 64):
         super().__init__()
-        self.B_net       = mlp(MIDI_DIM, hidden, 1)                    # log(B)
-        self.dur_net     = mlp(MIDI_DIM, hidden, 1)                    # log(dur)
-        self.tau1_k1_net  = mlp(MIDI_DIM + VEL_DIM, hidden, 1)        # log(tau1) for k=1 only
-        self.tau_ratio_net = mlp(MIDI_DIM + K_DIM, hidden, 1)        # log(tau_k / tau_k1) for k>1
-        self.A0_net      = mlp(MIDI_DIM + K_DIM + VEL_DIM, hidden, 1) # log(A0_ratio)
-        self.df_net      = mlp(MIDI_DIM + K_DIM, hidden, 1)           # log(df+1)
-        self.eq_net      = mlp(MIDI_DIM + FREQ_DIM, hidden, 1)        # gain_db
-        self.wf_net      = mlp(MIDI_DIM, hidden, 1)                   # log(width_factor)
+        self.B_net         = mlp(MIDI_DIM, hidden, 1)                        # log(B)
+        self.dur_net       = mlp(MIDI_DIM, hidden, 1)                        # log(dur)
+        self.tau1_k1_net   = mlp(MIDI_DIM + VEL_DIM, hidden, 1)             # log(tau1) for k=1
+        self.tau_ratio_net = mlp(MIDI_DIM + K_DIM, hidden, 1)               # log(tau_k / tau_k1)
+        self.A0_net        = mlp(MIDI_DIM + K_DIM + VEL_DIM, hidden, 1)     # log(A0_ratio)
+        self.df_net        = mlp(MIDI_DIM + K_DIM, hidden, 1)               # log(df)
+        self.eq_net        = mlp(MIDI_DIM + FREQ_DIM, hidden, 1)            # gain_db
+        self.wf_net        = mlp(MIDI_DIM, hidden, 1)                       # log(width_factor)
+        # noise_net → [log(attack_tau_s), log(centroid_hz), log(A_noise)]
+        self.noise_net     = mlp(MIDI_DIM + VEL_DIM, hidden, 3)
+        # biexp_net → [logit(a1), log(tau2/tau1)]
+        self.biexp_net     = mlp(MIDI_DIM + K_DIM + VEL_DIM, hidden, 2)
 
         # Bias B_net final layer to log(1e-4) ≈ -9.2 so initial B is in piano range.
-        # Without this, random init gives output ≈ 0 → exp(0) = 1.0, placing harmonics
-        # at completely wrong frequencies and causing the STFT loss to plateau instantly.
         nn.init.constant_(self.B_net[-1].bias, -9.2)
+
+        # Noise net biases: attack_tau ≈ 0.05s → log=-3.0; centroid ≈ 3000 Hz → log=8.0;
+        # A_noise ≈ 0.06 → log=-2.8
+        nn.init.constant_(self.noise_net[-1].bias[0], -3.0)
+        nn.init.constant_(self.noise_net[-1].bias[1],  8.0)
+        nn.init.constant_(self.noise_net[-1].bias[2], -2.8)
+
+        # biexp_net biases: a1 → logit(0.85) ≈ 1.73 (mostly fast decay);
+        # log(tau2/tau1) → log(3) ≈ 1.1 (tau2 ≈ 3×tau1)
+        nn.init.constant_(self.biexp_net[-1].bias[0],  1.73)
+        nn.init.constant_(self.biexp_net[-1].bias[1],  1.10)
 
     def forward_B(self, mf):                  return self.B_net(mf)
     def forward_dur(self, mf):                return self.dur_net(mf)
@@ -133,6 +149,8 @@ class InstrumentProfile(nn.Module):
     def forward_df(self, mf, kf):             return self.df_net(torch.cat([mf, kf], -1))
     def forward_eq(self, mf, ff):             return self.eq_net(torch.cat([mf, ff], -1))
     def forward_wf(self, mf):                 return self.wf_net(mf)
+    def forward_noise(self, mf, vf):          return self.noise_net(torch.cat([mf, vf], -1))
+    def forward_biexp(self, mf, kf, vf):      return self.biexp_net(torch.cat([mf, kf, vf], -1))
 
 
 # ── Data extraction ───────────────────────────────────────────────────────────
@@ -141,6 +159,7 @@ def build_dataset(samples: dict) -> dict:
     """Extract training tensors from raw params dict."""
     B_data, dur_data, wf_data = [], [], []
     tau_data, tau1_k1_data, A0_data, df_data, eq_data = [], [], [], [], []
+    noise_data, biexp_data = [], []
 
     # Common EQ freq grid
     eq_freqs = None
@@ -185,6 +204,19 @@ def build_dataset(samples: dict) -> dict:
                     ff = freq_feat(fhz)
                     eq_data.append((mf, ff, float(g)))
 
+        # noise model: attack_tau_s, centroid_hz, A_noise
+        noise = s.get("noise") or {}
+        atk_tau = noise.get("attack_tau_s") or 0
+        centroid = noise.get("centroid_hz") or 0
+        A_noise  = noise.get("A_noise") or 0
+        if atk_tau > 0.001 and centroid > 50:
+            if A_noise < 0.001:
+                A_noise = 0.06  # fall back to physical default if not stored
+            noise_data.append((mf, vf,
+                                math.log(max(atk_tau, 1e-4)),
+                                math.log(max(centroid, 10.0)),
+                                math.log(max(A_noise, 1e-4))))
+
         # per-partial
         parts = {p["k"]: p for p in s.get("partials", []) if "k" in p}
         a0_k1 = parts.get(1, {}).get("A0") or 0
@@ -222,6 +254,16 @@ def build_dataset(samples: dict) -> dict:
             if df > 0.001:
                 df_data.append((mf, kf, math.log(df)))
 
+            # bi-exponential decay: a1 and tau2/tau1 ratio
+            a1_val  = p.get("a1")
+            tau2_val = p.get("tau2")
+            if (a1_val is not None and tau2_val is not None
+                    and 0.01 < a1_val < 0.99 and t1 > 0.005
+                    and tau2_val > t1 * 1.1):
+                logit_a1 = math.log(a1_val / (1.0 - a1_val))
+                log_ratio = math.log(tau2_val / t1)
+                biexp_data.append((mf, kf, vf, logit_a1, log_ratio))
+
     # ── Outlier filtering before batching ─────────────────────────────────────
     def iqr_filter_list(items, val_idx, k_iqr=3.0):
         """Remove items where value at val_idx is an outlier (IQR method)."""
@@ -242,7 +284,9 @@ def build_dataset(samples: dict) -> dict:
     tau_data      = iqr_filter_list(tau_data,      2, k_iqr=1.5)
     tau1_k1_data  = iqr_filter_list(tau1_k1_data,  2)
     A0_data       = iqr_filter_list(A0_data,        3)
-    df_data  = iqr_filter_list(df_data,  2)
+    df_data       = iqr_filter_list(df_data,        2)
+    noise_data    = iqr_filter_list(noise_data,     2)  # filter on log(attack_tau)
+    biexp_data    = iqr_filter_list(biexp_data,     3)  # filter on logit(a1)
 
     # Pre-stack into batch tensors for fast training
     batches = {}
@@ -291,10 +335,26 @@ def build_dataset(samples: dict) -> dict:
         batches["eq_ff"] = torch.stack([d[1] for d in eq_sub])
         batches["eq_y"]  = torch.tensor([d[2] for d in eq_sub], dtype=torch.float32)
 
+    if noise_data:
+        batches["noise_mf"] = torch.stack([d[0] for d in noise_data])
+        batches["noise_vf"] = torch.stack([d[1] for d in noise_data])
+        # targets: [log_tau, log_centroid, log_A_noise]
+        batches["noise_y"] = torch.tensor(
+            [[d[2], d[3], d[4]] for d in noise_data], dtype=torch.float32)
+
+    if biexp_data:
+        batches["biexp_mf"] = torch.stack([d[0] for d in biexp_data])
+        batches["biexp_kf"] = torch.stack([d[1] for d in biexp_data])
+        batches["biexp_vf"] = torch.stack([d[2] for d in biexp_data])
+        # targets: [logit_a1, log_ratio]
+        batches["biexp_y"] = torch.tensor(
+            [[d[3], d[4]] for d in biexp_data], dtype=torch.float32)
+
     return dict(
         batches=batches, eq_freqs=eq_freqs,
         n_B=len(B_data), n_tau=len(tau_data), n_tau1_k1=len(tau1_k1_data),
         n_A0=len(A0_data), n_df=len(df_data), n_eq=len(eq_sub) if eq_sub else 0,
+        n_noise=len(noise_data), n_biexp=len(biexp_data),
     )
 
 
@@ -348,6 +408,14 @@ def train(model: InstrumentProfile, ds: dict, epochs: int = 800,
             pred = model.forward_eq(b["eq_mf"], b["eq_ff"]).squeeze(-1)
             terms.append(0.1 * nn.functional.mse_loss(pred, b["eq_y"]))
 
+        if "noise_mf" in b:
+            pred = model.forward_noise(b["noise_mf"], b["noise_vf"])  # [N, 3]
+            terms.append(nn.functional.mse_loss(pred, b["noise_y"]))
+
+        if "biexp_mf" in b:
+            pred = model.forward_biexp(b["biexp_mf"], b["biexp_kf"], b["biexp_vf"])  # [N, 2]
+            terms.append(nn.functional.mse_loss(pred, b["biexp_y"]))
+
         # Smoothness penalty: consecutive MIDI values should give similar outputs
         # Evaluated on a fixed grid, independent of training data
         if epoch % 5 == 0:
@@ -358,14 +426,16 @@ def train(model: InstrumentProfile, ds: dict, epochs: int = 800,
             vf_ref = vel_feat(4)
             vf_batch = vf_ref.unsqueeze(0).expand(len(midi_grid), -1)
 
-            B_grid    = model.forward_B(mf_grid).squeeze(-1)
-            tau1_grid = model.forward_tau1_k1(mf_grid, vf_batch).squeeze(-1)
-            a0_grid   = model.forward_A0(mf_grid, kf_batch, vf_batch).squeeze(-1)
+            B_grid     = model.forward_B(mf_grid).squeeze(-1)
+            tau1_grid  = model.forward_tau1_k1(mf_grid, vf_batch).squeeze(-1)
+            a0_grid    = model.forward_A0(mf_grid, kf_batch, vf_batch).squeeze(-1)
+            noise_grid = model.forward_noise(mf_grid, vf_batch)  # [N, 3]
 
             smooth = (
                 (B_grid[1:]    - B_grid[:-1]).pow(2).mean() +
                 (tau1_grid[1:] - tau1_grid[:-1]).pow(2).mean() +
-                (a0_grid[1:]   - a0_grid[:-1]).pow(2).mean()
+                (a0_grid[1:]   - a0_grid[:-1]).pow(2).mean() +
+                (noise_grid[1:] - noise_grid[:-1]).pow(2).mean()
             )
             terms.append(0.3 * smooth)
 
@@ -433,6 +503,20 @@ def generate_profile(
                 vf = vel_feat(vel)
                 key = f"m{midi:03d}_vel{vel}"
 
+                # Noise model prediction for this (midi, vel)
+                noise_pred = model.forward_noise(mf, vf).squeeze(0)  # [3]
+                attack_tau = float(torch.exp(noise_pred[0]).item())
+                attack_tau = float(np.clip(attack_tau, 0.002, 1.0))
+                centroid   = float(torch.exp(noise_pred[1]).item())
+                centroid   = float(np.clip(centroid, 100.0, 20000.0))
+                A_noise    = float(torch.exp(noise_pred[2]).item())
+                A_noise    = float(np.clip(A_noise, 0.001, 0.5))
+                noise_out  = {
+                    "attack_tau_s": round(attack_tau, 5),
+                    "centroid_hz":  round(centroid, 1),
+                    "A_noise":      round(A_noise, 5),
+                }
+
                 # Per-partial predictions
                 partials = []
                 for k in range(1, n_partials + 1):
@@ -447,18 +531,24 @@ def generate_profile(
                         tau1 = tau1_k1
                     else:
                         log_ratio = float(model.forward_tau_ratio(mf, kf).item())
-                        # Physical cap: tau_k ≤ tau_k1 (no partial decays slower than fundamental)
-                        # Lower bound: tau_k ≥ tau_k1 * exp(-0.3 * log(k)) → natural power-law decay
-                        log_k_bias = -0.3 * math.log(k)   # soft physics prior: ~k^-0.3 decay
+                        log_k_bias = -0.3 * math.log(k)
                         log_ratio = max(log_k_bias - 2.0, min(0.0, log_ratio))
                         tau1 = tau1_k1 * math.exp(log_ratio)
                     tau1 = max(tau1, 0.005)
-                    tau2 = None  # bi-exponential tau2 not predicted by NN
 
-                    a0_pred = model.forward_A0(mf, kf, vf)
+                    # Bi-exponential decay parameters
+                    biexp_pred = model.forward_biexp(mf, kf, vf).squeeze(0)  # [2]
+                    a1_raw   = float(torch.sigmoid(biexp_pred[0]).item())
+                    tau2_ratio = float(torch.exp(biexp_pred[1]).item())
+                    a1_val   = float(np.clip(a1_raw, 0.05, 0.99))
+                    tau2_val = tau1 * max(tau2_ratio, 1.1)  # tau2 always > tau1
+                    # Only emit tau2/a1 when meaningfully biexponential (a1 < 0.92)
+                    emit_biexp = a1_val < 0.92
+
+                    a0_pred  = model.forward_A0(mf, kf, vf)
                     a0_ratio = float(torch.exp(a0_pred).item())
                     a0_ratio = max(a0_ratio, 1e-6)
-                    A0 = a0_ratio  # k=1 A0_ratio = 1.0 by definition
+                    A0 = a0_ratio
 
                     df_pred = model.forward_df(mf, kf)
                     df = float(torch.exp(df_pred).item())
@@ -469,10 +559,11 @@ def generate_profile(
                         "f_hz": round(f_k, 4),
                         "A0":   round(float(A0), 6),
                         "tau1": round(float(tau1), 6),
+                        "a1":   round(a1_val, 4),
                         "df":   round(float(df), 6),
                     }
-                    if tau2 is not None:
-                        entry["tau2"] = round(float(tau2), 6)
+                    if emit_biexp:
+                        entry["tau2"] = round(tau2_val, 6)
                     partials.append(entry)
 
                 sample = {
@@ -481,6 +572,7 @@ def generate_profile(
                     "B":          round(float(B), 8),
                     "duration_s": round(float(dur), 3),
                     "partials":   partials,
+                    "noise":      noise_out,
                     "_from_profile": True,
                 }
                 if spectral_eq:
@@ -524,7 +616,8 @@ def main():
     print("Building dataset ...")
     ds = build_dataset(samples)
     print(f"  B={ds['n_B']}  tau={ds['n_tau']}  tau1_k1={ds['n_tau1_k1']}  "
-          f"A0={ds['n_A0']}  df={ds['n_df']}  eq={ds['n_eq']}")
+          f"A0={ds['n_A0']}  df={ds['n_df']}  eq={ds['n_eq']}  "
+          f"noise={ds['n_noise']}  biexp={ds['n_biexp']}")
 
     model = InstrumentProfile(hidden=args.hidden)
     n_params = sum(p.numel() for p in model.parameters())

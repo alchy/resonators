@@ -57,9 +57,10 @@ def synth_config_to_kwargs(config: dict) -> dict:
     s = config.get('stereo', {})
     for key, section in [
         ('sr', r), ('duration', r), ('fade_out', r), ('target_rms', r),
+        ('onset_ms', r),
         ('harmonic_brightness', t), ('beat_scale', t),
-        ('eq_strength', t), ('soundboard_strength', t),
-        ('pan_spread', s), ('stereo_boost', s),
+        ('eq_strength', t), ('soundboard_strength', t), ('noise_level', t),
+        ('pan_spread', s), ('stereo_boost', s), ('stereo_decorr', s),
     ]:
         if key in section and not key.startswith('_'):
             kwargs[key] = section[key]
@@ -265,6 +266,9 @@ def synthesize_note(params: dict,
                     harmonic_brightness: float = 0.0,
                     fade_out: float = 0.5,
                     target_rms: float = 0.06,
+                    noise_level: float = 1.0,
+                    stereo_decorr: float = 1.0,
+                    onset_ms: float = 3.0,
                     rng_seed: int = None) -> np.ndarray:
     """Synthesize a piano note in stereo (N,2) via per-string panning.
 
@@ -353,9 +357,10 @@ def synthesize_note(params: dict,
 
     # Attack noise: independent L/R, pure transient (no persistent floor)
     # tau_noise capped at k=1 string decay -- hammer always decays faster than string
-    noise_p = params.get('noise', {})
+    noise_p  = params.get('noise', {})
     taun_raw = noise_p.get('attack_tau_s', 0.05) or 0.05
     cent     = noise_p.get('centroid_hz', 3000.0) or 3000.0
+    A_noise  = (noise_p.get('A_noise', 0.06) or 0.06) * noise_level
     # Find tau1 of k=1 partial to cap noise decay
     tau1_k1 = next((p.get('tau1', 3.0) for p in partials
                     if p.get('k') == 1 and p.get('A0') and p['A0'] > 1e-10), 3.0) or 3.0
@@ -367,7 +372,7 @@ def synthesize_note(params: dict,
         sh = np.zeros(n);  y = 0.0
         for i in range(n):
             y = alp * raw[i] + (1 - alp) * y;  sh[i] = y
-        buf += 0.06 * sh * nenv
+        buf += A_noise * sh * nenv
 
     if soundboard_strength > 0.005:
         ir = get_soundboard_ir(sr)
@@ -381,7 +386,7 @@ def synthesize_note(params: dict,
     # Frequency-dependent stereo decorrelation (Schroeder all-pass pair)
     # Replicates the natural L/R differences from mic geometry and soundboard coupling.
     # Decorrelation strength scales with MIDI (treble needs more width).
-    decor_strength = min(1.0, (midi - 40) / 60.0) * 0.45  # 0 at bass, 0.45 at treble
+    decor_strength = min(1.0, (midi - 40) / 60.0) * 0.45 * stereo_decorr
     if decor_strength > 0.01:
         # Simple first-order all-pass: y[n] = -g*x[n] + x[n-1] + g*y[n-1]
         # Applied with different coefficients to L and R -> decorrelates them
@@ -428,8 +433,8 @@ def synthesize_note(params: dict,
             stereo = stereo * scale
 
     # Short onset ramp: oscillators start at cos(phi) which is generally non-zero.
-    # A 3 ms linear ramp from 0 eliminates the click without affecting perceived attack.
-    n_onset = min(int(0.003 * sr), n // 10)
+    # Linear ramp from 0 eliminates the click without affecting perceived attack.
+    n_onset = min(int(onset_ms * 0.001 * sr), n // 10)
     if n_onset > 1:
         ramp = np.linspace(0.0, 1.0, n_onset, dtype=np.float32)
         stereo[:n_onset] *= ramp[:, np.newaxis]
