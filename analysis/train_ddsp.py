@@ -126,7 +126,9 @@ def synth_batch(model: InstrumentProfile,
     kf_nk = kf_k.unsqueeze(0).expand(N, K, -1).reshape(N * K, -1)   # [N*K, K_DIM]
 
     # NN forward — single pass per sub-network (clamp prevents exp overflow)
-    B_n       = torch.exp(model.B_net(mf_n).clamp(-20, 0)).squeeze(-1)           # [N] >0
+    # B clamp: piano B ∈ [3e-7, 0.05] → log range [-15, -3]
+    # Upper bound -3 prevents the B=1 catastrophe (wrong harmonic positions).
+    B_n       = torch.exp(model.B_net(mf_n).clamp(-15, -3)).squeeze(-1)          # [N] >0
     tau1_k1_n = torch.exp(model.forward_tau1_k1(mf_n, vf_n).clamp(-5, 4)).squeeze(-1)  # [N] 0.007..55s
     tau_ratio = model.forward_tau_ratio(mf_nk, kf_nk).squeeze(-1).reshape(N, K)  # [N, K]
     A0_nk     = torch.exp(model.forward_A0(mf_nk, kf_nk, vf_nk).clamp(-10, 8)).squeeze(-1).reshape(N, K)
@@ -197,6 +199,49 @@ def multiscale_spectral_loss(synth: torch.Tensor, target: torch.Tensor,
                        return_complex=True).abs()
         loss = loss + (S.log1p() - T.log1p()).pow(2).mean()
     return loss / len(fft_sizes)
+
+
+# ── B initialisation from extracted params ────────────────────────────────────
+
+def init_B_from_params(model: InstrumentProfile, params_path: str,
+                       lr: float = 1e-3, steps: int = 500) -> int:
+    """
+    Pre-train B_net on per-note inharmonicity values from analysis/params.json.
+
+    B cannot be recovered from STFT loss (inharmonic deviations are sub-bin).
+    This supervised pass initialises B_net to per-note extracted values before
+    DDSP training begins, so harmonics start at the correct frequencies.
+
+    Returns the number of samples used.
+    """
+    params = json.loads(Path(params_path).read_text()).get("samples", {})
+    data: list[tuple] = []
+    for key, s in params.items():
+        parts = key.split("_")
+        if len(parts) != 2:
+            continue
+        midi = int(parts[0][1:])
+        B_val = s.get("B")
+        if B_val is None or B_val <= 0:
+            continue
+        mf = midi_feat(midi)
+        data.append((mf, math.log(B_val)))
+
+    if not data:
+        return 0
+
+    opt = torch.optim.Adam(model.B_net.parameters(), lr=lr)
+    mf_t  = torch.stack([d[0] for d in data])
+    logB_t = torch.tensor([d[1] for d in data], dtype=torch.float32).unsqueeze(1)
+
+    for _ in range(steps):
+        pred = model.B_net(mf_t)
+        loss = (pred - logB_t).pow(2).mean()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+
+    return len(data)
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
@@ -310,7 +355,14 @@ def main():
         model.load_state_dict(ckpt["state_dict"])
         print(f"Warm-started from {args.init}")
     else:
-        print("Training from random initialisation (use --init for warm-start)")
+        # Pre-train B_net from extracted params so harmonics start at correct frequencies.
+        # B cannot be learned from STFT loss (inharmonic deviations are sub-bin).
+        params_json = Path("analysis/params.json")
+        if params_json.exists():
+            n_b = init_B_from_params(model, str(params_json))
+            print(f"B_net pre-trained from params.json ({n_b} notes)")
+        else:
+            print("Training from random initialisation (B_net bias=-9.2, B≈1e-4)")
 
     print(f"Model parameters: {n_params:,}")
     print(f"Training notes: {len(wav_bank)}  seg={args.seg:.1f}s  "

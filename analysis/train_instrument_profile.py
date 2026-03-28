@@ -120,6 +120,11 @@ class InstrumentProfile(nn.Module):
         self.eq_net      = mlp(MIDI_DIM + FREQ_DIM, hidden, 1)        # gain_db
         self.wf_net      = mlp(MIDI_DIM, hidden, 1)                   # log(width_factor)
 
+        # Bias B_net final layer to log(1e-4) ≈ -9.2 so initial B is in piano range.
+        # Without this, random init gives output ≈ 0 → exp(0) = 1.0, placing harmonics
+        # at completely wrong frequencies and causing the STFT loss to plateau instantly.
+        nn.init.constant_(self.B_net[-1].bias, -9.2)
+
     def forward_B(self, mf):                  return self.B_net(mf)
     def forward_dur(self, mf):                return self.dur_net(mf)
     def forward_tau1_k1(self, mf, vf):        return self.tau1_k1_net(torch.cat([mf, vf], -1))

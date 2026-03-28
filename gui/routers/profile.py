@@ -45,7 +45,7 @@ def _run_train(req: TrainRequest):
 
     from analysis.train_ddsp import (
         load_wav_bank, train_ddsp, generate_profile, build_feature_tables,
-        InstrumentProfile,
+        InstrumentProfile, init_B_from_params,
     )
     import torch
 
@@ -75,6 +75,17 @@ def _run_train(req: TrainRequest):
             ckpt = torch.load(req.init, map_location="cpu", weights_only=True)
             model.load_state_dict(ckpt["state_dict"])
             log.info(f"Warm-started from {req.init}")
+            job["log_lines"].append(f"Warm-started from {req.init}")
+        else:
+            # Pre-train B_net from extracted params so harmonics start at correct
+            # frequencies. STFT loss cannot learn inharmonicity (sub-bin deviation).
+            params_json = Path("analysis/params.json")
+            if params_json.exists():
+                n_b = init_B_from_params(model, str(params_json))
+                log.info(f"B_net pre-trained from params.json ({n_b} notes)")
+                job["log_lines"].append(f"B_net initialised from params.json ({n_b} notes)")
+            else:
+                job["log_lines"].append("B_net random init (B≈1e-4)")
 
         job["status"] = "running"
 
