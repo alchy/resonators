@@ -107,8 +107,9 @@ def _stream_subprocess(cmd: list, step_state: dict, job: dict) -> None:
     """Run subprocess, stream stdout+stderr into step_state log_lines."""
     step_state["status"] = "running"
     step_state["log_lines"] = []
-    is_train = step_state is job["steps"]["train"]
+    is_train   = step_state is job["steps"]["train"]
     is_extract = step_state is job["steps"]["extract"]
+    is_eq      = step_state is job["steps"]["eq"]
 
     try:
         proc = subprocess.Popen(
@@ -128,7 +129,7 @@ def _stream_subprocess(cmd: list, step_state: dict, job: dict) -> None:
                 step_state["log_lines"] = step_state["log_lines"][-80:]
             if is_train:
                 _parse_train_line(line, step_state)
-            elif is_extract:
+            elif is_extract or is_eq:
                 _parse_extract_line(line, step_state)
 
         proc.wait()
