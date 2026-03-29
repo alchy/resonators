@@ -40,8 +40,25 @@ analysis/orig_*.wav
 analysis/*.wav
 analysis/extract_log.txt
 analysis/spectral_eq_log.txt
+analysis/synth_preview/
+
+# Analysis output data (session-specific, not versioned)
+analysis/params.json
 analysis/params_*.json
-generated/*.wav
+analysis/params-*.json
+analysis/profile.pt
+analysis/profile_diagnostics.png
+analysis/synth_config.json
+analysis/*.log
+
+# Generated audio outputs
+generated/
+
+# Runtime logs
+runtime-logs/
+
+# Temporary files
+tmp/
 
 # Claude internal
 .claude/settings.local.json

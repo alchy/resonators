@@ -17,7 +17,7 @@ the model is directly optimised to reproduce the spectrogram.
 Usage:
   python analysis/train_ddsp.py
          --wav-dir  C:/SoundBanks/IthacaPlayer/ks-grand
-         --out      analysis/params_profile.json
+         --out      analysis/params-nn-profile.json
          --model    analysis/profile_ddsp.pt
          [--init    analysis/profile.pt]   # warm-start from extracted profile
          [--epochs  300]
@@ -322,7 +322,7 @@ def train_ddsp(model: InstrumentProfile, wav_bank: dict,
 def main():
     ap = argparse.ArgumentParser(description="DDSP instrument profile training")
     ap.add_argument("--wav-dir",  default="C:/SoundBanks/IthacaPlayer/ks-grand")
-    ap.add_argument("--out",      default="analysis/params_profile.json")
+    ap.add_argument("--out",      default="analysis/params-nn-profile.json")
     ap.add_argument("--model",    default="analysis/profile_ddsp.pt")
     ap.add_argument("--init",     default=None,
                     help="Warm-start from existing profile.pt")
