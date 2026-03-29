@@ -93,6 +93,128 @@ def _load_params(cfg: dict, name: str, params_file: str = "") -> dict:
     return json.loads(p.read_text())
 
 
+def _is_e2e_checkpoint(source_params: str) -> bool:
+    return source_params.endswith(".pt")
+
+
+def _load_e2e_model(checkpoint_path: str):
+    """Load SetterNN + DiffSynth from e2e checkpoint. Returns (setter, synth, cfg)."""
+    import json as _json
+    import torch
+    from models.setter_nn  import SetterNN
+    from models.diff_synth import DifferentiablePianoSynth
+
+    cfg_path = Path("config_e2e.json")
+    with open(cfg_path) as f:
+        e2e_cfg = _json.load(f)
+
+    K      = e2e_cfg["n_partials"]
+    setter = SetterNN(K=K, hidden=e2e_cfg["setter_nn"]["hidden_dim"])
+    synth  = DifferentiablePianoSynth(
+        sr=e2e_cfg["sample_rate"],
+        frame_size=e2e_cfg["frame_size"],
+        noise_order=e2e_cfg["diff_synth"]["noise_order"],
+    )
+
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    setter.load_state_dict(ckpt["setter_state"])
+    if "synth_state" in ckpt and ckpt["synth_state"]:
+        synth.load_state_dict(ckpt["synth_state"])
+
+    setter.eval()
+    synth.eval()
+    return setter, synth, e2e_cfg
+
+
+def _run_e2e_job(session_name: str, midi_range: list[int], vel_layers: list[int],
+                 cfg: dict, checkpoint_path: str):
+    """Generate samples using SetterNN + DifferentiablePianoSynth."""
+    import torch
+
+    job = _jobs[session_name]
+    job["status"] = "running"
+    job["done"] = 0
+    job["total"] = len(midi_range) * len(vel_layers)
+    job["errors"] = []
+    log.info(f"[{session_name}] E2E job: {job['total']} samples from {checkpoint_path}")
+
+    try:
+        setter, synth, e2e_cfg = _load_e2e_model(checkpoint_path)
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"Failed to load checkpoint: {e}")
+        return
+
+    sr_val  = e2e_cfg["sample_rate"]
+    sr_code = 48 if sr_val >= 48000 else 44
+    out_dir = session_dir(session_name) / "generated"
+    out_dir.mkdir(exist_ok=True)
+
+    # Velocity RMS profile for amplitude scaling
+    vel_profile = cfg.get("velocity_rms_profile", {})
+    base_rms    = cfg.get("target_rms", 0.06) or 0.06
+    gamma       = cfg.get("velocity_curve_gamma", 0.7)
+
+    with torch.no_grad():
+        for midi in midi_range:
+            for vel in vel_layers:
+                if job.get("cancelled"):
+                    job["status"] = "cancelled"
+                    return
+                try:
+                    f0  = torch.tensor([440.0 * 2.0 ** ((midi - 69) / 12.0)])
+                    vn  = torch.tensor([vel / 7.0])
+
+                    params = setter(f0, vn)
+                    duration = cfg.get("duration", 4.0) or 4.0
+                    audio_t  = synth(params, f0, duration_s=float(duration))
+                    # audio_t: (1, 2, n_samples)
+                    audio_np = audio_t.squeeze(0).numpy().T   # (n_samples, 2)
+
+                    # Velocity amplitude scaling
+                    if vel_profile and str(vel) in vel_profile:
+                        vel_ratio = float(vel_profile[str(vel)])
+                    else:
+                        vel_ratio = ((vel + 1) / 8.0) ** gamma
+                    target_amp = float(base_rms * vel_ratio)
+
+                    current_rms = float(np.sqrt(np.mean(audio_np ** 2)) + 1e-12)
+                    if current_rms > 1e-9:
+                        audio_np = audio_np * (target_amp / current_rms)
+                    audio_np = np.clip(audio_np, -1.0, 1.0)
+
+                    fname = f"m{midi:03d}-vel{vel}-f{sr_code}.wav"
+                    sf.write(str(out_dir / fname), audio_np, sr_val)
+                    job["last_file"] = fname
+                except Exception as e:
+                    log.error(f"[{session_name}] m{midi:03d}_vel{vel}: {e}")
+                    job["errors"].append(f"m{midi:03d}_vel{vel}: {e}")
+                job["done"] += 1
+
+    job["status"] = "done"
+    job["finished_at"] = time.time()
+    _write_instrument_def(session_name, cfg, out_dir, vel_layers)
+    log.info(f"[{session_name}] E2E job done: {job['done']} files, {len(job['errors'])} errors")
+
+
+def _write_instrument_def(session_name: str, cfg: dict, out_dir: Path, vel_layers: list):
+    n_files = len(list(out_dir.glob("*.wav")))
+    meta = cfg.get("instrument_meta", {})
+    instrument_def = {
+        "instrumentName":    meta.get("instrumentName", session_name),
+        "velocityMaps":      str(len(vel_layers)),
+        "instrumentVersion": meta.get("instrumentVersion", "1"),
+        "author":            meta.get("author", "Unknown"),
+        "description":       meta.get("description", "N/A"),
+        "category":          meta.get("category", "Piano"),
+        "sampleCount":       n_files,
+    }
+    (out_dir / "instrument-definition.json").write_text(
+        json.dumps(instrument_def, indent=2, ensure_ascii=False)
+    )
+    log.info(f"[{session_name}] instrument-definition.json written ({n_files} samples)")
+
+
 def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cfg: dict,
              params_file: str = ""):
     from analysis.physics_synth import synthesize_note
@@ -124,21 +246,17 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
                 color_blend = kwargs.pop("vel_color_blend", 0.0) or 0.0
                 color_ref   = int(kwargs.pop("vel_color_ref", 4) or 4)
 
-                # Apply spectral color blending toward reference velocity
                 if color_blend > 0.0:
                     ref_key    = f"m{midi:03d}_vel{color_ref}"
                     ref_sample = params_data["samples"].get(ref_key)
                     sample = _apply_color_blend(sample, ref_sample, color_blend)
 
-                # Apply tau1_k1_scale to k=1 partial
                 if tau_scale != 1.0:
                     sample = copy.deepcopy(sample)
                     for p in sample.get("partials", []):
                         if p.get("k") == 1:
                             p["tau1"] = (p.get("tau1") or 3.0) * tau_scale
 
-                # Velocity scaling: use sample-derived profile if available,
-                # otherwise fall back to gamma power curve.
                 gamma = kwargs.pop("velocity_curve_gamma", 0.7)
                 base_rms = kwargs.get("target_rms", 0.06) or 0.06
                 vel_profile = cfg.get("velocity_rms_profile", {})
@@ -149,7 +267,6 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
                     vel_ratio = vel_fraction ** gamma
                 kwargs["target_rms"] = float(base_rms * vel_ratio)
 
-                # Remove keys not accepted by synthesize_note
                 allowed = {
                     "duration", "sr", "soundboard_strength", "beat_scale",
                     "pan_spread", "eq_strength", "eq_freq_min", "stereo_boost",
@@ -157,8 +274,6 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
                     "noise_level", "stereo_decorr", "onset_ms",
                 }
                 filtered = {k: v for k, v in kwargs.items() if k in allowed}
-
-                # Deterministic seed: same note/vel always produces identical stereo field
                 filtered["rng_seed"] = midi * 100 + vel
                 audio = synthesize_note(sample, **filtered)
                 sr_val = int(filtered.get("sr", 44100))
@@ -174,23 +289,7 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
     job["status"] = "done"
     job["finished_at"] = time.time()
     log.info(f"[{session_name}] Job done: {job['done']} files, {len(job['errors'])} errors")
-
-    # Write instrument-definition.json into the generated directory
-    n_files = len(list(out_dir.glob("*.wav")))
-    meta = cfg.get("instrument_meta", {})
-    instrument_def = {
-        "instrumentName":    meta.get("instrumentName", session_name),
-        "velocityMaps":      str(len(job.get("vel_layers", [3]))),
-        "instrumentVersion": meta.get("instrumentVersion", "1"),
-        "author":            meta.get("author", "Unknown"),
-        "description":       meta.get("description", "N/A"),
-        "category":          meta.get("category", "Piano"),
-        "sampleCount":       n_files,
-    }
-    (out_dir / "instrument-definition.json").write_text(
-        json.dumps(instrument_def, indent=2, ensure_ascii=False)
-    )
-    log.info(f"[{session_name}] instrument-definition.json written ({n_files} samples)")
+    _write_instrument_def(session_name, cfg, out_dir, vel_layers)
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -229,11 +328,16 @@ def start_generate(name: str, body: GenerateRequest):
         "params_file": effective_params,
     }
 
-    t = threading.Thread(
-        target=_run_job,
-        args=(name, midi_range, vel_layers, cfg, body.params_file),
-        daemon=True,
-    )
+    # Route to e2e or legacy synthesis based on source_params extension
+    source_params = body.params_file or cfg.get("source_params", "")
+    if _is_e2e_checkpoint(source_params):
+        target = _run_e2e_job
+        args   = (name, midi_range, vel_layers, cfg, source_params)
+    else:
+        target = _run_job
+        args   = (name, midi_range, vel_layers, cfg, body.params_file)
+
+    t = threading.Thread(target=target, args=args, daemon=True)
     t.start()
     return _jobs[name]
 

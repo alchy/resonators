@@ -573,7 +573,7 @@ const Pipeline = {
       'pipe-wav-dir', 'pipe-workers',
       'pipe-extract-workers', 'pipe-extract-verbose',
       'pipe-eq-workers',
-      'pipe-out', 'pipe-epochs', 'pipe-lr', 'pipe-hidden', 'pipe-no-preserve',
+      'pipe-e2e-out',
     ];
     cmdTriggers.forEach(id => {
       const inp = el(id);
@@ -581,10 +581,8 @@ const Pipeline = {
       if (inp) inp.addEventListener('change', () => Pipeline.updateAllCommands());
     });
 
-    // Auto-derive pipe-out from wav-dir bank name
+    // Auto-update cmd when wav-dir changes
     function syncProfilePath() {
-      const wav = el('pipe-wav-dir')?.value.trim() || '';
-      el('pipe-out').value = derivePaths(wav).profile;
       Pipeline.updateAllCommands();
       Generate.updateGenCmd();
     }
@@ -610,15 +608,12 @@ const Pipeline = {
     const wavDir = el('pipe-wav-dir').value.trim();
     const paths  = derivePaths(wavDir);
     const body = {
-      wav_dir:     wavDir,
-      out:         el('pipe-out').value.trim() || paths.profile,
-      params_out:  paths.params,
-      epochs:      parseInt(el('pipe-epochs').value),
-      lr:          parseFloat(el('pipe-lr').value) || 0.003,
-      hidden:      parseInt(el('pipe-hidden').value) || 64,
-      no_preserve: el('pipe-no-preserve').checked,
-      workers:     workers,
-      from_step:   fromStep,
+      wav_dir:    wavDir,
+      params_out: paths.params,
+      e2e_out:    el('pipe-e2e-out')?.value.trim() || 'checkpoints/e2e',
+      e2e_config: 'config_e2e.json',
+      workers:    workers,
+      from_step:  fromStep,
     };
     fetch('/api/pipeline/run', {
       method: 'POST',
@@ -665,12 +660,8 @@ const Pipeline = {
       const w = el('pipe-eq-workers')?.value || sharedW;
       return `python -u analysis/compute-spectral-eq.py \\\n    --params ${paths.params} \\\n    --bank ${wav} \\\n    --workers ${w}`;
     } else if (step === 'train') {
-      const out    = el('pipe-out')?.value.trim()    || paths.profile;
-      const epochs = el('pipe-epochs')?.value        || '300';
-      const lr     = el('pipe-lr')?.value            || '0.003';
-      const hidden = el('pipe-hidden')?.value        || '64';
-      const noPreserve = el('pipe-no-preserve')?.checked ? ' \\\n    --no-preserve-orig' : '';
-      return `python -u analysis/train-instrument-profile.py \\\n    --in ${paths.params} \\\n    --out ${out} \\\n    --epochs ${epochs} \\\n    --lr ${lr} \\\n    --hidden ${hidden}${noPreserve}`;
+      const e2eOut = el('pipe-e2e-out')?.value.trim() || 'checkpoints/e2e';
+      return `python -u train_e2e.py \\\n    --config config_e2e.json \\\n    --params ${paths.params} \\\n    --bank ${wav} \\\n    --out ${e2eOut}`;
     }
     return '';
   },
@@ -763,14 +754,15 @@ const Pipeline = {
         }
       }
 
-      // Train epoch label
+      // Train epoch label (e2e: show phase + epoch/total + loss)
       if (step === 'train') {
         const lbl = el('pprog-train-label');
         if (lbl) {
-          const ep   = sd.epoch || 0;
-          const tot  = sd.total || 0;
-          const loss = sd.loss != null ? `  loss=${sd.loss.toFixed(4)}` : '';
-          lbl.textContent = tot > 0 ? `${ep}/${tot}${loss}` : '';
+          const ep    = sd.epoch || 0;
+          const tot   = sd.total || 0;
+          const loss  = sd.loss != null ? `  loss=${sd.loss.toFixed(4)}` : '';
+          const phase = sd.phase_label ? `[${sd.phase_label}] ` : '';
+          lbl.textContent = tot > 0 ? `${phase}${ep}/${tot}${loss}` : '';
         }
       }
 

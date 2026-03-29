@@ -191,19 +191,11 @@
       <span class="pstep-label">TRAIN PROFILE</span>
       <span class="pstep-led" id="pled-train"></span>
     </div>
-    <div class="step-desc">NN profile training: interpolates B, τ, A0, df across keyboard. Writes smooth <code>params-nn-profile.json</code>.</div>
+    <div class="step-desc">E2E SetterNN training: (midi, vel) → physical params → audio. 3-phase curriculum: warm-start → spectral loss → full loss. Checkpoint: <code>checkpoints/e2e/best.pt</code>.</div>
     <div class="step-options">
-      <div class="opt-label">LOG → <code>runtime-logs/train-profile-log.txt</code></div>
-      <label class="field-label">Profile out
-        <input id="pipe-out" type="text" value="analysis/params-nn-profile.json" style="width:100%">
-      </label>
-      <div class="opt-row">
-        <label class="field-label">Epochs <input id="pipe-epochs" type="number" value="800" min="10" max="2000" style="width:52px"></label>
-        <label class="field-label">LR <input id="pipe-lr" type="number" value="0.003" min="0.0001" max="0.1" step="0.0001" style="width:60px"></label>
-        <label class="field-label">Hidden <input id="pipe-hidden" type="number" value="64" min="16" max="256" style="width:48px"></label>
-      </div>
-      <label class="field-label switch-row">No preserve orig
-        <label class="switch"><input type="checkbox" id="pipe-no-preserve"><div class="toggle blue"></div></label>
+      <div class="opt-label">LOG → <code>runtime-logs/train-e2e-log.txt</code></div>
+      <label class="field-label">Checkpoint out
+        <input id="pipe-e2e-out" type="text" value="checkpoints/e2e" style="width:100%">
       </label>
     </div>
     <div class="step-cmd">

@@ -51,7 +51,8 @@ from data.piano_dataset import PianoDataset, collate_fn
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 def _setup_log(out_dir: Path) -> None:
-    log_path = out_dir / "train_e2e.log"
+    log_path = Path("runtime-logs/train-e2e-log.txt")
+    log_path.parent.mkdir(exist_ok=True)
     class _Tee:
         def __init__(self, *s): self.streams = s
         def write(self, t):

@@ -1,13 +1,13 @@
 """
 gui/routers/pipeline.py
 ────────────────────────
-Full analysis pipeline: extract params → spectral EQ → train profile.
+Full analysis pipeline: extract params → spectral EQ → e2e train (SetterNN).
 Each step runs as a subprocess for isolation and real-time stdout streaming.
 
 Output paths derived from WAV bank directory name (bank suffix):
-  wav_dir  C:/SoundBanks/IthacaPlayer/ks-grand
-  params_out  →  analysis/params-ks-grand.json
-  out         →  analysis/params-nn-profile-ks-grand.json
+  wav_dir     C:/SoundBanks/IthacaPlayer/salamander
+  params_out  →  analysis/params-salamander.json
+  checkpoint  →  checkpoints/e2e/best.pt
 
 Endpoints:
   POST /api/pipeline/run          start pipeline (all steps or from a specific step)
@@ -15,9 +15,9 @@ Endpoints:
   POST /api/pipeline/cancel       interrupt current step + subprocess
   GET  /api/pipeline/log/{step}   last N lines from runtime-logs/{step}-log.txt
   GET  /api/pipeline/log-stream/{step}  SSE tail of log file (EventSource)
-  GET  /api/pipeline/egrb_status  EGRB training state from checkpoints/train.log
+  GET  /api/pipeline/egrb_status  E2E training state from runtime-logs/train-e2e-log.txt
   GET  /api/pipeline/vel_profile  velocity RMS ratios derived from A0 energies
-  POST /api/pipeline/apply/{session}  copy trained profile into session
+  POST /api/pipeline/apply/{session}  point session at trained checkpoint
 
 Logging:
   Analysis scripts tee stdout to runtime-logs/{step}-log.txt (created on first run).
@@ -50,13 +50,10 @@ _job: dict = {"status": "idle"}
 
 class PipelineRequest(BaseModel):
     wav_dir:      str   = "C:/SoundBanks/IthacaPlayer/ks-grand"
-    out:          str   = "analysis/params-nn-profile.json"
     params_out:   str   = "analysis/params.json"
-    epochs:       int   = 800
-    lr:           float = 0.003
-    hidden:       int   = 64
+    e2e_out:      str   = "checkpoints/e2e"
+    e2e_config:   str   = "config_e2e.json"
     workers:      int   = 4
-    no_preserve:  bool  = False
     from_step:    str   = "extract"   # "extract" | "eq" | "train"
 
 
@@ -73,25 +70,44 @@ def _make_fresh_job() -> dict:
             "extract": {"status": "idle", "log_lines": [], "progress_pct": 0, "rc": None},
             "eq":      {"status": "idle", "log_lines": [], "progress_pct": 0, "rc": None},
             "train":   {"status": "idle", "log_lines": [], "progress_pct": 0, "rc": None,
-                        "epoch": 0, "total": 0, "loss": None},
+                        "epoch": 0, "total": 0, "loss": None, "phase_label": ""},
         },
     }
 
 
 def _parse_train_line(line: str, step_state: dict) -> None:
-    """Extract epoch/loss from train_instrument_profile.py output."""
-    m = re.search(r'[Ee]poch\s+(\d+)\s*/\s*(\d+)', line)
+    """
+    Parse train_e2e.py output lines. Handles:
+      Phase 0a:  "  0a epoch   5/20  B_loss=0.123456"
+      Phase 0b:  "  0b epoch  40/80  total=87.1891  B=21.43 ..."
+      Phase 1/2: "  epoch  200/300  train=0.1234  val=0.1456  lr=1.00e-04  10s"
+    """
+    # Detect phase label (0a / 0b / phase1 / phase2)
+    m_phase = re.match(r'\s*(0[ab])\s+epoch', line)
+    if m_phase:
+        step_state["phase_label"] = m_phase.group(1)
+    elif re.match(r'\s*epoch\s+\d+', line):
+        # Determine from context: phase1 has "train=", phase2 also
+        if step_state.get("phase_label") not in ("0a", "0b"):
+            step_state["phase_label"] = "e2e"
+
+    # Epoch progress
+    m = re.search(r'epoch\s+(\d+)\s*/\s*(\d+)', line, re.IGNORECASE)
     if m:
         step_state["epoch"] = int(m.group(1))
         step_state["total"] = int(m.group(2))
         if step_state["total"] > 0:
             step_state["progress_pct"] = round(100 * step_state["epoch"] / step_state["total"])
-    m2 = re.search(r'loss[=:\s]+([\d.]+(?:e[+\-]?\d+)?)', line, re.IGNORECASE)
-    if m2:
-        try:
-            step_state["loss"] = float(m2.group(1))
-        except ValueError:
-            pass
+
+    # Loss: try "val=", "train=", "total=", "loss="
+    for pattern in (r'val=([\d.]+)', r'train=([\d.]+)', r'total=([\d.]+)', r'loss[=:\s]+([\d.]+)'):
+        m2 = re.search(pattern, line)
+        if m2:
+            try:
+                step_state["loss"] = float(m2.group(1))
+            except ValueError:
+                pass
+            break
 
 
 def _parse_extract_line(line: str, step_state: dict) -> None:
@@ -176,15 +192,13 @@ def _run_pipeline(req: PipelineRequest) -> None:
                    "--params", req.params_out,
                    "--bank", req.wav_dir,
                    "--workers", str(req.workers)]
-        else:  # train
-            cmd = [PYTHON, "-u", "analysis/train-instrument-profile.py",
-                   "--in", req.params_out,
-                   "--out", req.out,
-                   "--epochs", str(req.epochs),
-                   "--lr", str(req.lr),
-                   "--hidden", str(req.hidden)]
-            if req.no_preserve:
-                cmd.append("--no-preserve-orig")
+        else:  # train — e2e SetterNN training
+            cmd = [PYTHON, "-u", "train_e2e.py",
+                   "--config",  req.e2e_config,
+                   "--params",  req.params_out,
+                   "--bank",    req.wav_dir,
+                   "--out",     req.e2e_out]
+            job["e2e_out"] = req.e2e_out
 
         log.info(f"Pipeline [{step}]: {' '.join(cmd)}")
         _stream_subprocess(cmd, step_state, job)
@@ -309,8 +323,8 @@ def cancel_pipeline():
 
 @router.get("/pipeline/egrb_status")
 def get_egrb_status():
-    """Read last line of runtime-logs/train-profile-log.txt and return current training state."""
-    log_path = Path("runtime-logs/train-profile-log.txt")
+    """Read last epoch line of runtime-logs/train-e2e-log.txt and return E2E training state."""
+    log_path = Path("runtime-logs/train-e2e-log.txt")
     if not log_path.exists():
         return {"status": "idle", "epoch": 0, "total": 0, "phase": None, "loss": None, "active": False}
 
@@ -329,7 +343,11 @@ def get_egrb_status():
         return {"status": "idle", "epoch": 0, "total": 0, "phase": None, "loss": None, "active": False}
 
     m_ep = re.search(r'epoch\s+(\d+)\s*/\s*(\d+)', last_line, re.IGNORECASE)
-    m_lo = re.search(r'loss=([\d.]+)', last_line)
+    # Match val=, train=, total=, or loss= (in priority order)
+    m_lo = (re.search(r'val=([\d.]+)', last_line) or
+            re.search(r'train=([\d.]+)', last_line) or
+            re.search(r'total=([\d.]+)', last_line) or
+            re.search(r'loss=([\d.]+)', last_line))
 
     epoch = int(m_ep.group(1)) if m_ep else 0
     total = int(m_ep.group(2)) if m_ep else 0
@@ -349,7 +367,7 @@ def get_egrb_status():
 _LOG_PATHS = {
     "extract": "runtime-logs/extract-params-log.txt",
     "eq":      "runtime-logs/spectral-eq-log.txt",
-    "train":   "runtime-logs/train-profile-log.txt",
+    "train":   "runtime-logs/train-e2e-log.txt",
 }
 
 
@@ -432,14 +450,16 @@ def apply_pipeline_to_session(session_name: str):
     if not sdir.exists():
         raise HTTPException(404, f"Session '{session_name}' not found")
 
-    out_path = _job.get("out") or "analysis/params-nn-profile.json"
-    src = Path(out_path)
-    if not src.exists():
-        # Fallback: point at raw extracted params if no trained profile yet
+    # Prefer e2e checkpoint (best.pt), fallback to raw params.json
+    e2e_out = _job.get("e2e_out", "checkpoints/e2e")
+    best_pt  = Path(e2e_out) / "best.pt"
+    if best_pt.exists():
+        src = best_pt
+    else:
         params_out = _job.get("params_out", "analysis/params.json")
         src = Path(params_out)
         if not src.exists():
-            raise HTTPException(400, "No trained profile and no params.json found")
+            raise HTTPException(400, "No e2e checkpoint and no params.json found")
 
     # Use forward slashes so the path is consistent on all platforms
     source_params = str(src).replace("\\", "/")
