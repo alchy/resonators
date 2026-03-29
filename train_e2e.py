@@ -258,7 +258,7 @@ def phase_audio(
         if val_loss < best_loss:
             best_loss = val_loss
             _save(out_dir / 'best.pt', setter, synth, opt, ep, phase, best_loss)
-            print(f"    ✓ saved best (val={best_loss:.4f})")
+            print(f"    [best] saved (val={best_loss:.4f})")
 
         if ep % 50 == 0:
             _save(out_dir / f'phase{phase}_epoch{ep:04d}.pt',

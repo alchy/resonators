@@ -1,0 +1,44 @@
+{
+  "_comment": "CPU-feasible config for smoke-testing / development. Reduced partials + segment.",
+  "sample_rate": 48000,
+  "n_partials": 16,
+  "frame_size": 240,
+
+  "setter_nn": {
+    "hidden_dim": 128,
+    "depth": 3
+  },
+
+  "diff_synth": {
+    "n_strings": 3,
+    "noise_order": 32
+  },
+
+  "training": {
+    "phase0_epochs": 40,
+    "phase1_epochs": 50,
+    "phase2_epochs": 100,
+    "batch_size": 4,
+    "segment_duration": 0.5,
+    "lr_phase0": 1e-3,
+    "lr_phase1": 1e-4,
+    "lr_phase2": 3e-5,
+    "lr_min_factor": 0.05,
+    "grad_clip": 1.0,
+    "val_split": 0.1
+  },
+
+  "loss": {
+    "w_mrstft":  1.0,
+    "w_l1":      0.2,
+    "w_attack":  0.3,
+    "w_f0":      0.05,
+    "w_rms":     0.05,
+    "w_physics": 0.02,
+    "mrstft_ffts": [256, 1024, 4096],
+    "attack_alpha": 4.0,
+    "attack_sigma": 2.0
+  },
+
+  "device": "cpu"
+}
