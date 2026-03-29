@@ -462,3 +462,27 @@ python -m uvicorn gui.server:app --port 8989 --reload
 Zdroj: `C:/SoundBanks/IthacaPlayer/ks-grand/` — 704 WAV souborů, 88 MIDI not × 8 velocity vrstev @ 44.1 kHz.
 
 Papers: `C:/Users/jindr/OneDrive/Osobni/LordAudio/IhtacaPapers/` — 16 dokumentů o fyzikálním modelování piána (skupina Chabassier/Inria, Simionato 2024 DDSP, Bank/Chabassier 2019 review).
+
+---
+
+## TODO / Known Limitations
+
+### Soundboard (rezonanční deska) — PARKED
+
+`soundboard_strength` parametr existuje v GUI i syntezátoru, ale je defaultně `0.0` a nedoporučuje se používat.
+
+**Proč je zaparkován:** Aktuální syntetický modální IR (40 módů) způsobuje:
+- Band-pass distorzi — zužuje frekvenční odezvu místo rozšíření
+- Amplitudovou modulaci ("croaking") z modálních rezonancí
+- Celkové snížení vnímaného těla místo jeho přidání
+
+**Co skutečný soundboard dělá:** přidává difuzní reverb ocas, lehce zesvětluje transient,
+NEZUŽUJE band. Tento efekt nelze věrně replikovat syntetickým IR bez měřeného impulzního
+záznamu z konkrétního nástroje.
+
+**Aktuální náhrada:** `eq_strength` + `compute_spectral_eq.py` pokrývá spektrální tvarování
+těla (rezonanční boosty, rolloff výšin) bez IR artefaktů.
+
+**Plánované řešení:** Naměřit skutečný IR z fyzického nástroje (pistolový výstřel nebo
+sweep) a použít ho místo syntetického. Alternativně: konvoluční reverb z piano recording
+odečtený od přímého signálu.
