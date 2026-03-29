@@ -1,0 +1,82 @@
+cmake_minimum_required(VERSION 3.16)
+project(IthacaCoreResonator VERSION 1.0.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# ── Sources ────────────────────────────────────────────────────────────────────
+
+set(SYNTH_SOURCES
+    synth/note_lut.cpp
+    synth/resonator_voice.cpp
+    synth/voice_manager.cpp
+    synth/biquad_eq.cpp
+)
+
+set(LOGGER_SOURCES
+    sampler/core_logger.cpp
+)
+
+set(DSP_SOURCES
+    dsp/dsp_chain.cpp
+    dsp/bbe/bbe_processor.cpp
+    dsp/bbe/biquad_filter.cpp
+    dsp/bbe/harmonic_enhancer.cpp
+    dsp/limiter/limiter.cpp
+)
+
+add_executable(IthacaCoreResonator
+    main.cpp
+    ${SYNTH_SOURCES}
+    ${LOGGER_SOURCES}
+    ${DSP_SOURCES}
+)
+
+# ── Include paths ─────────────────────────────────────────────────────────────
+
+target_include_directories(IthacaCoreResonator PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party   # nlohmann/json.hpp
+)
+
+# ── SIMD ─────────────────────────────────────────────────────────────────────
+
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64|X86_64")
+    if (MSVC)
+        target_compile_options(IthacaCoreResonator PRIVATE /arch:AVX2)
+    else()
+        target_compile_options(IthacaCoreResonator PRIVATE -mavx2 -mfma)
+    endif()
+endif()
+
+# ── Compiler flags ────────────────────────────────────────────────────────────
+
+if (MSVC)
+    target_compile_options(IthacaCoreResonator PRIVATE
+        $<$<CONFIG:Debug>:   /Od /Zi>
+        $<$<CONFIG:Release>: /O2 /DNDEBUG>
+    )
+    target_compile_definitions(IthacaCoreResonator PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+        WIN32_LEAN_AND_MEAN
+    )
+else()
+    target_compile_options(IthacaCoreResonator PRIVATE
+        $<$<CONFIG:Debug>:   -g -O0>
+        $<$<CONFIG:Release>: -O3 -DNDEBUG>
+    )
+endif()
+
+# ── Custom targets ────────────────────────────────────────────────────────────
+
+add_custom_target(run
+    COMMAND IthacaCoreResonator
+    DEPENDS IthacaCoreResonator
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+add_custom_target(clean-exports
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_SOURCE_DIR}/exports
+    COMMENT "Removing exported WAV files"
+)

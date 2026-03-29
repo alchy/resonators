@@ -1,0 +1,18 @@
+#pragma once
+#include "note_params.h"
+#include <string>
+
+// Load params.json (from extract_params / SetterNN pipeline) into a NoteLUT.
+//
+// Key format in params.json:  "m060_vel3"  (midi=60, vel=3)
+// Velocity layer:             vel 0..7  → VEL_LAYERS index
+// MIDI note:                  21..108   → MIDI_COUNT index
+//
+// Missing notes (no WAV source) are left with valid=false.
+// Callers should fall back to the nearest valid neighbour.
+
+NoteLUT loadNoteLUT(const std::string& params_json_path);
+
+// Return the nearest valid NoteParams for (midi, vel).
+// Searches outward in midi, then vel until a valid entry is found.
+const NoteParams& lookupNote(const NoteLUT& lut, int midi, int vel);
