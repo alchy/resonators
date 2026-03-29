@@ -111,12 +111,15 @@ def process_sample(key: str):
         vel    = sample['vel']
 
         # ── Load original WAV ──────────────────────────────────────────────
-        wav_name = f'm{midi:03d}-vel{vel}-f44.wav'
-        wav_path = Path(_G_BANK_DIR) / wav_name
-        if not wav_path.exists():
-            return key, {'_log': f"SKIP: WAV not found at {wav_path}", '_skip': True}
+        # Auto-detect sample-rate suffix (f44, f48, f88, …)
+        matches = sorted(Path(_G_BANK_DIR).glob(f'm{midi:03d}-vel{vel}-f*.wav'))
+        if not matches:
+            return key, {'_log': f"SKIP: WAV not found at {Path(_G_BANK_DIR)}/m{midi:03d}-vel{vel}-f*.wav", '_skip': True}
+        wav_path = matches[0]
 
         orig_stereo, sr_orig = sf.read(str(wav_path), dtype='float32', always_2d=True)
+        # Use the WAV's actual sample rate for synthesis so freq axes match
+        sr_use = int(sr_orig)
         # Convert to mono
         orig_mono = orig_stereo.mean(axis=1).astype(np.float64)
 
@@ -124,7 +127,7 @@ def process_sample(key: str):
         synth_stereo = synthesize_note(
             sample,
             duration=None,          # uses duration_s from params
-            sr=SR,
+            sr=sr_use,
             soundboard_strength=0.0,
             beat_scale=1.0,
             pan_spread=0.55,
@@ -140,7 +143,7 @@ def process_sample(key: str):
 
         # ── Stereo width factor: rms(Side)/rms(Mid) ratio, skip first 100 ms ──
         # Skip attack transient; measure steady-state stereo spread.
-        skip = int(0.10 * SR)
+        skip = int(0.10 * sr_use)
         orig_M = (orig_stereo_trim[skip:, 0] + orig_stereo_trim[skip:, 1]) / 2
         orig_S = (orig_stereo_trim[skip:, 0] - orig_stereo_trim[skip:, 1]) / 2
         syn_M  = (synth_stereo_trim[skip:, 0] + synth_stereo_trim[skip:, 1]) / 2
@@ -157,8 +160,8 @@ def process_sample(key: str):
         ltase_orig  = _compute_ltase(orig_mono,  n_fft, hop)
         ltase_synth = _compute_ltase(synth_mono, n_fft, hop)
 
-        # Frequency axis for n_fft/2+1 bins
-        freqs_fft = np.linspace(0.0, SR / 2.0, n_fft // 2 + 1)
+        # Frequency axis for n_fft/2+1 bins (use actual WAV sample rate)
+        freqs_fft = np.linspace(0.0, sr_use / 2.0, n_fft // 2 + 1)
 
         # ── Ratio with regularization ──────────────────────────────────────
         eps = max(ltase_synth.max(), ltase_orig.max()) * 1e-3
