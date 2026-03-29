@@ -111,7 +111,7 @@ void ResonatorVoice::noteOn(int midi, int vel,
     {
         int onset_n = std::max(1, (int)(cfg.onset_ms * 0.001f * sample_rate));
         onset_step_ = 1.f / (float)onset_n;
-        onset_gain_ = onset_step_;  // first sample gets step (not 0)
+        onset_gain_ = 0.f;   // Python: linspace(0, 1, n_onset) — first sample is 0
         in_onset_   = (onset_n > 1);
     }
 
