@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 // nlohmann/json single-header — place at third_party/json.hpp
 #include "json.hpp"
@@ -111,19 +112,20 @@ static NoteParams parseSample(const json& s) {
 
 // ── Public: loadNoteLUT ───────────────────────────────────────────────────────
 
-NoteLUT loadNoteLUT(const std::string& params_json_path) {
+void loadNoteLUT(const std::string& params_json_path, NoteLUT& lut) {
+    // lut is passed by reference (heap-allocated by caller) to avoid
+    // a ~2.7 MB stack-local temporary that would cause STATUS_STACK_OVERFLOW.
+    std::memset(&lut, 0, sizeof(lut));   // reset: all valid=false (no stack temporary)
+
     std::ifstream f(params_json_path);
     if (!f) throw std::runtime_error("Cannot open: " + params_json_path);
 
     json root;
     f >> root;
 
-    NoteLUT lut{};  // all valid=false by default
-
     if (!root.contains("samples") || !root["samples"].is_object())
         throw std::runtime_error("params.json: missing 'samples' object");
 
-    int loaded = 0;
     for (const auto& [key, val] : root["samples"].items()) {
         // key format: "m060_vel3"
         int midi = 0, vel = 0;
@@ -132,12 +134,7 @@ NoteLUT loadNoteLUT(const std::string& params_json_path) {
         if (vel < 0 || vel >= VEL_LAYERS) continue;
 
         lut[midi - MIDI_MIN][vel] = parseSample(val);
-        loaded++;
     }
-
-    // Optional: warn about missing notes
-    // (caller can use lookupNote() for nearest-neighbour fallback)
-    return lut;
 }
 
 // ── Public: lookupNote ────────────────────────────────────────────────────────

@@ -11,7 +11,8 @@
 // Missing notes (no WAV source) are left with valid=false.
 // Callers should fall back to the nearest valid neighbour.
 
-NoteLUT loadNoteLUT(const std::string& params_json_path);
+// Fill lut in-place (avoids a 2.7 MB stack-local temporary).
+void loadNoteLUT(const std::string& params_json_path, NoteLUT& lut);
 
 // Return the nearest valid NoteParams for (midi, vel).
 // Searches outward in midi, then vel until a valid entry is found.

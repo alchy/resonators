@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <algorithm>
+#include <memory>
 
 #ifdef _WIN32
   #include <conio.h>
@@ -202,12 +203,14 @@ int runResonator(Logger& logger, const std::string& params_json_path,
     logger.log("runResonator", LogSeverity::Info,
                "=== IthacaCoreResonator STARTING ===");
 
-    ResonatorEngine engine;
-    if (!engine.initialize(params_json_path, logger)) {
+    // Heap-allocate engine: ResonatorVoiceManager contains ~4 MB of data
+    // (NoteLUT 2.8 MB + 88 ResonatorVoice objects) — too large for stack.
+    auto engine = std::make_unique<ResonatorEngine>();
+    if (!engine->initialize(params_json_path, logger)) {
         logger.log("runResonator", LogSeverity::Error, "Initialization failed");
         return 1;
     }
-    if (!engine.start()) {
+    if (!engine->start()) {
         logger.log("runResonator", LogSeverity::Error, "Audio start failed");
         return 1;
     }
@@ -219,11 +222,11 @@ int runResonator(Logger& logger, const std::string& params_json_path,
         std::printf("[MIDI] Available ports:\n");
         for (int i = 0; i < (int)ports.size(); i++)
             std::printf("  [%d] %s\n", i, ports[i].c_str());
-        midi.open(engine, midi_port);
+        midi.open(*engine, midi_port);
     }
 #ifndef _WIN32
     if (!midi.isOpen())
-        midi.openVirtual(engine);   // macOS/Linux virtual port as fallback
+        midi.openVirtual(*engine);   // macOS/Linux virtual port as fallback
 #endif
 
     // ── Keyboard fallback (a-k = C4..C5, z = sustain, q = quit) ─────────────
@@ -240,15 +243,15 @@ int runResonator(Logger& logger, const std::string& params_json_path,
             if (ch == 'q' || ch == 'Q') break;
             if (ch == 'z') {
                 sustain = !sustain;
-                engine.sustainPedal(sustain ? 127 : 0);
+                engine->sustainPedal(sustain ? 127 : 0);
                 std::printf("Sustain: %s\n", sustain ? "ON" : "OFF");
                 continue;
             }
             for (int i = 0; i < 8; i++) {
                 if (ch == keys[i]) {
-                    engine.noteOn((uint8_t)midis[i], 80);
+                    engine->noteOn((uint8_t)midis[i], 80);
                     ma_sleep(300);
-                    engine.noteOff((uint8_t)midis[i]);
+                    engine->noteOff((uint8_t)midis[i]);
                 }
             }
         }
@@ -267,14 +270,14 @@ int runResonator(Logger& logger, const std::string& params_json_path,
             if (ch == 'q' || ch == 'Q') break;
             if (ch == 'z') {
                 sustain = !sustain;
-                engine.sustainPedal(sustain ? 127 : 0);
+                engine->sustainPedal(sustain ? 127 : 0);
                 std::printf("Sustain: %s\n", sustain ? "ON" : "OFF");
             }
             for (int i = 0; i < 8; i++) {
                 if (ch == keys[i]) {
-                    engine.noteOn((uint8_t)midis[i], 80);
+                    engine->noteOn((uint8_t)midis[i], 80);
                     ma_sleep(300);
-                    engine.noteOff((uint8_t)midis[i]);
+                    engine->noteOff((uint8_t)midis[i]);
                 }
             }
         }
@@ -284,7 +287,7 @@ int runResonator(Logger& logger, const std::string& params_json_path,
 #endif
 
     midi.close();
-    engine.stop();
+    engine->stop();
     logger.log("runResonator", LogSeverity::Info,
                "=== IthacaCoreResonator STOPPED ===");
     return 0;

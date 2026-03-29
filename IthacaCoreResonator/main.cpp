@@ -16,8 +16,12 @@
 #include <iostream>
 #include <string>
 #include <cstdlib>
+#include <cstdio>
 
 int main(int argc, char* argv[]) {
+    // Disable stdout/stderr buffering so logs are visible even when piped.
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
     std::cout << "IthacaCoreResonator v1.0 — Physics Piano Synthesizer\n\n";
 
     const std::string params_json = (argc > 1)

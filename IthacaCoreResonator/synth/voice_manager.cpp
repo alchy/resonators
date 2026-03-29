@@ -29,7 +29,7 @@ void ResonatorVoiceManager::initialize(const std::string& params_json_path,
 
     logger.log("VoiceManager", LogSeverity::Info, "Loading: " + params_json_path);
     try {
-        lut_ = loadNoteLUT(params_json_path);
+        loadNoteLUT(params_json_path, lut_);
     } catch (const std::exception& e) {
         logger.log("VoiceManager", LogSeverity::Error,
             std::string("Failed to load params: ") + e.what());
