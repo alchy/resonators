@@ -111,8 +111,10 @@ void ResonatorVoice::noteOn(int midi, int vel,
     noise_state_  = 0.f;
 
     // ── Spectral EQ (designed from 64-point curve) ────────────────────────────
-    eq_.design(p.eq_freqs_hz, p.eq_gains_db, sample_rate);
-    eq_.reset();
+    eq_l_.design(p.eq_freqs_hz, p.eq_gains_db, sample_rate);
+    eq_r_.design(p.eq_freqs_hz, p.eq_gains_db, sample_rate);
+    eq_l_.reset();
+    eq_r_.reset();
 
     width_factor_ = p.width_factor;
     active_       = true;

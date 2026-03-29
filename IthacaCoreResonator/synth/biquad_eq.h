@@ -1,6 +1,8 @@
 #pragma once
 #include "note_params.h"
 
+static constexpr int EQ_BANDS = 8;   // number of biquad bands in cascade
+
 // 8-band peaking-EQ biquad cascade.
 //
 // Designed at note-on from NoteParams::eq_gains_db[EQ_BANDS].

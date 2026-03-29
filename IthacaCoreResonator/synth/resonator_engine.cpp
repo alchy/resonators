@@ -25,6 +25,14 @@
 #include <stdexcept>
 #include <algorithm>
 
+#ifdef _WIN32
+  #include <conio.h>
+#else
+  #include <termios.h>
+  #include <unistd.h>
+  #include <fcntl.h>
+#endif
+
 // ── MIDI event queue (lock-free single-producer / single-consumer) ─────────────
 // Simple ring buffer — main thread writes, audio thread reads.
 struct MidiEvent {
@@ -63,11 +71,11 @@ ResonatorEngine::~ResonatorEngine() {
 bool ResonatorEngine::initialize(const std::string& params_json_path,
                                   Logger& logger) {
     logger_ = &logger;
-    logger.log("ResonatorEngine", 0, "Initializing...");
+    logger.log("ResonatorEngine", LogSeverity::Info, "Initializing...");
 
     vm_.initialize(params_json_path, sample_rate_, logger);
     if (!vm_.isInitialized()) {
-        logger.log("ResonatorEngine", 2, "VoiceManager initialization failed");
+        logger.log("ResonatorEngine", LogSeverity::Error, "VoiceManager initialization failed");
         return false;
     }
 
@@ -75,7 +83,7 @@ bool ResonatorEngine::initialize(const std::string& params_json_path,
     buf_l_ = new float[block_size_];
     buf_r_ = new float[block_size_];
 
-    logger.log("ResonatorEngine", 0,
+    logger.log("ResonatorEngine", LogSeverity::Info,
         "Ready. SR=" + std::to_string(sample_rate_) +
         " block=" + std::to_string(block_size_));
     return true;
@@ -110,7 +118,7 @@ void ResonatorEngine::processBlock(float* out_interleaved, uint32_t frame_count)
     uint32_t remaining = frame_count;
     uint32_t offset    = 0;
     while (remaining > 0) {
-        uint32_t chunk = std::min(remaining, (uint32_t)block_size_);
+        uint32_t chunk = remaining < (uint32_t)block_size_ ? remaining : (uint32_t)block_size_;
         vm_.processBlockUninterleaved(buf_l_, buf_r_, (int)chunk);
 
         // Interleave into float32 stereo output
@@ -138,18 +146,18 @@ bool ResonatorEngine::start() {
     cfg.periodSizeInFrames= block_size_;
 
     if (ma_device_init(nullptr, &cfg, device_) != MA_SUCCESS) {
-        logger_->log("ResonatorEngine", 2, "Failed to open audio device");
+        logger_->log("ResonatorEngine", LogSeverity::Error, "Failed to open audio device");
         return false;
     }
 
     if (ma_device_start(device_) != MA_SUCCESS) {
-        logger_->log("ResonatorEngine", 2, "Failed to start audio device");
+        logger_->log("ResonatorEngine", LogSeverity::Error, "Failed to start audio device");
         ma_device_uninit(device_);
         return false;
     }
 
     running_.store(true);
-    logger_->log("ResonatorEngine", 0,
+    logger_->log("ResonatorEngine", LogSeverity::Info,
         "Audio device started: " + std::string(device_->playback.name));
     return true;
 }
@@ -159,7 +167,7 @@ void ResonatorEngine::stop() {
     ma_device_stop(device_);
     ma_device_uninit(device_);
     running_.store(false);
-    if (logger_) logger_->log("ResonatorEngine", 0, "Audio device stopped");
+    if (logger_) logger_->log("ResonatorEngine", LogSeverity::Info, "Audio device stopped");
 }
 
 // ── Thread-safe MIDI interface ────────────────────────────────────────────────
@@ -226,7 +234,6 @@ int runResonator(Logger& logger, const std::string& params_json_path,
     std::printf("\nKeyboard fallback: a-k = C4-C5  |  z = sustain  |  q = quit\n\n");
 
 #ifdef _WIN32
-    #include <conio.h>
     while (true) {
         if (_kbhit()) {
             int ch = _getch();
@@ -248,9 +255,6 @@ int runResonator(Logger& logger, const std::string& params_json_path,
         ma_sleep(1);
     }
 #else
-    #include <termios.h>
-    #include <unistd.h>
-    #include <fcntl.h>
     struct termios oldt, newt;
     tcgetattr(STDIN_FILENO, &oldt);
     newt = oldt;
