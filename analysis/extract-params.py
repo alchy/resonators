@@ -843,7 +843,7 @@ def main():
     _setup_log()
     parser = argparse.ArgumentParser()
     parser.add_argument('--bank', default='C:/SoundBanks/IthacaPlayer/ks-grand')
-    parser.add_argument('--out', default='IthacaCoreResonator/soundbanks/salamander.json')
+    parser.add_argument('--out', default='analysis/params.json')
     parser.add_argument('--plot', action='store_true', help='Plot one sample')
     parser.add_argument('--plot-keyboard', action='store_true', help='Plot B across keyboard')
     parser.add_argument('--midi', type=int, default=None)
