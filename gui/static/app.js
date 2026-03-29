@@ -286,7 +286,7 @@ const Session = {
       try {
         await API.sessions('', {
           method: 'POST',
-          body: JSON.stringify({ name, instrument_meta: meta }),
+          body: JSON.stringify({ name, instrument_meta: meta, wav_dir: wav }),
         });
         BankBrowser._selected = null;
         closeModal('modal-new-session');
@@ -354,6 +354,11 @@ const Session = {
     el('lcd-patch-name').textContent = name.toUpperCase();
     await Session.loadConfig();
     await Player.loadFiles();
+    // Restore bank dir and params from session config
+    if (Session.config?.wav_dir) {
+      el('pipe-wav-dir').value = Session.config.wav_dir;
+      el('pipe-wav-dir').dispatchEvent(new Event('input'));
+    }
     // Populate Generate params field from session source_params
     el('gen-params-file').value = Session.config?.source_params || '';
     Generate.updateGenCmd();

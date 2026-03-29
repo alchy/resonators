@@ -121,6 +121,7 @@ def list_sessions():
 class CreateSession(BaseModel):
     name: str                            # bank name, e.g. "ks-grand"
     instrument_meta: Optional[dict] = None  # pre-filled from instrument-definition.json
+    wav_dir: str = ""                    # source WAV bank path, stored for pipeline restore
 
 
 @router.post("")
@@ -161,6 +162,8 @@ def create_session(body: CreateSession):
             "sampleCount":       0,
         }
     cfg["instrument_meta"] = meta
+    if body.wav_dir:
+        cfg["wav_dir"] = body.wav_dir
     save_config(name, cfg)
     return {"name": name, "created": True}
 
