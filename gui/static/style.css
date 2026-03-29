@@ -44,7 +44,7 @@ body {
 }
 
 .rack-module {
-  min-width: 1300px;
+  min-width: 1500px;
   min-height: 620px;
   background: var(--panel);
   display: flex;
@@ -65,19 +65,48 @@ header {
   gap: 12px;
 }
 
-/* Two-line LCD display — left half */
+/* LCD panel — 50% of header, two inner columns */
 .header-lcd {
   flex: 0 0 50%;
   background-color: var(--lcd-bg);
   background-image: var(--lcd-grid-h), var(--lcd-grid-v);
   border: 2px solid var(--lcd-text);
   border-radius: 3px;
-  padding: 3px 10px;
+  padding: 4px 8px;
   box-shadow: inset 0 0 8px rgba(0,0,0,0.3);
   user-select: none;
+}
+
+/* Inner two-column grid */
+.lcd-cols {
+  display: flex;
+  height: 100%;
+  gap: 0;
+}
+
+.lcd-left {
+  flex: 0 0 50%;
   display: flex;
   flex-direction: column;
   justify-content: center;
+  padding-right: 6px;
+  gap: 2px;
+}
+
+.lcd-divider {
+  width: 1px;
+  background: rgba(15,56,15,0.5);
+  margin: 2px 6px;
+  flex-shrink: 0;
+}
+
+.lcd-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding-left: 2px;
 }
 
 .lcd-line {
@@ -92,27 +121,81 @@ header {
 }
 
 .lcd-line-1 {
-  font-size: 15px;
-  letter-spacing: 3px;
-  opacity: 0.7;   /* dimmer — instrument ID line */
+  font-size: 14px;
+  letter-spacing: 2px;
+  opacity: 0.7;
 }
 
 .lcd-line-2 {
-  font-size: 18px;
+  font-size: 17px;
   letter-spacing: 2px;
 }
 
 .lcd-line-2 span {
   opacity: 1;
-  font-size: 18px;
+  font-size: 17px;
 }
 
 .lcd-line-3 {
-  font-size: 13px;
+  font-size: 12px;
   letter-spacing: 1px;
   opacity: 0.65;
-  margin-top: 2px;
+  margin-top: 1px;
 }
+
+/* Pipeline steps in LCD right column */
+.lcd-step-title {
+  font-family: var(--font-lcd);
+  font-size: 11px;
+  letter-spacing: 3px;
+  color: var(--lcd-text);
+  opacity: 0.55;
+  text-shadow: 1px 1px 0 var(--lcd-shadow);
+  margin-bottom: 1px;
+}
+
+.lcd-step-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-lcd);
+  font-size: 13px;
+  color: var(--lcd-text);
+  text-shadow: 1px 1px 0 var(--lcd-shadow);
+  opacity: 0.85;
+  line-height: 1.1;
+}
+
+.lcd-step-num  { font-size: 11px; opacity: 0.55; min-width: 10px; }
+.lcd-step-name { min-width: 50px; font-size: 12px; letter-spacing: 1px; }
+
+.lcd-step-bar {
+  flex: 1;
+  height: 5px;
+  background: rgba(15,56,15,0.4);
+  border: 1px solid rgba(15,56,15,0.7);
+  border-radius: 1px;
+  overflow: hidden;
+  position: relative;
+}
+.lcd-step-fill {
+  height: 100%;
+  background: var(--lcd-text);
+  transition: width 0.5s;
+  display: block;
+}
+
+.lcd-step-status {
+  font-size: 11px;
+  min-width: 30px;
+  text-align: right;
+  opacity: 0.7;
+}
+
+/* Status colours in LCD */
+.lcd-step-row.step-running { opacity: 1; }
+.lcd-step-row.step-done    { opacity: 0.6; }
+.lcd-step-row.step-error   { color: #5a1a1a; }
 
 .session-bar {
   flex: 1;
@@ -140,7 +223,7 @@ header {
 ══════════════════════════════════════════════════════════════════════════════ */
 main {
   display: grid;
-  grid-template-columns: auto auto auto auto minmax(280px,360px) minmax(340px,420px);
+  grid-template-columns: minmax(220px,270px) auto auto auto auto minmax(240px,300px) minmax(320px,400px);
   flex-grow: 1;
   overflow: hidden;
 }
@@ -528,10 +611,73 @@ input[type="range"]:hover::-webkit-slider-thumb {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
+   PIPELINE PANEL
+══════════════════════════════════════════════════════════════════════════════ */
+.panel-pipeline { min-width: 220px; }
+
+.pipeline-step {
+  border: 1px solid var(--white-dim);
+  border-radius: 3px;
+  padding: 5px 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pstep-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pstep-num {
+  font-size: 14px;
+  font-family: var(--font-lcd);
+  color: var(--lcd-bg);
+  background: var(--lcd-text);
+  width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.pstep-label {
+  flex: 1;
+  font-size: 9px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--white);
+}
+
+.pstep-led {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--white-dim);
+  background: transparent;
+  flex-shrink: 0;
+}
+.pstep-led.led-running { background: var(--led-amber); border-color: var(--led-amber); box-shadow: 0 0 5px var(--led-amber); }
+.pstep-led.led-done    { background: var(--led-green); border-color: var(--led-green); box-shadow: 0 0 5px var(--led-green); }
+.pstep-led.led-error   { background: var(--led-red);   border-color: var(--led-red);   box-shadow: 0 0 5px var(--led-red); }
+.pstep-led.led-skipped { background: transparent; opacity: 0.3; }
+
+.pstep-actions { display: flex; gap: 4px; }
+.pstep-actions button { padding: 3px 8px; font-size: 9px; }
+
+.pipe-full-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
    FILE LIST
 ══════════════════════════════════════════════════════════════════════════════ */
 .file-list {
-  flex-grow: 1; overflow-y: auto;
+  overflow-y: auto;
+  max-height: 220px;
   display: flex; flex-direction: column; gap: 1px;
 }
 .file-item {

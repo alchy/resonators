@@ -11,11 +11,39 @@
 
 <!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <header>
+  <!-- LCD left column: patch/playing info -->
   <div class="header-lcd">
-    <div class="lcd-line lcd-line-1">ITHACA RESONATOR SYNTH</div>
-    <div class="lcd-line lcd-line-2">PATCH NAME: <span id="lcd-patch-name">— NO SESSION —</span></div>
-    <div class="lcd-line lcd-line-3">&#9654; <span id="lcd-playing">—</span></div>
+    <div class="lcd-cols">
+      <div class="lcd-left">
+        <div class="lcd-line lcd-line-1">ITHACA RESONATOR SYNTH</div>
+        <div class="lcd-line lcd-line-2">PATCH: <span id="lcd-patch-name">— NO SESSION —</span></div>
+        <div class="lcd-line lcd-line-3">&#9654; <span id="lcd-playing">—</span></div>
+      </div>
+      <div class="lcd-divider"></div>
+      <div class="lcd-right">
+        <div class="lcd-line lcd-step-title">PIPELINE</div>
+        <div class="lcd-step-row" id="lcd-step-extract">
+          <span class="lcd-step-num">1</span>
+          <span class="lcd-step-name">EXTRACT</span>
+          <span class="lcd-step-bar"><span class="lcd-step-fill" id="lcd-fill-extract" style="width:0%"></span></span>
+          <span class="lcd-step-status" id="lcd-status-extract">—</span>
+        </div>
+        <div class="lcd-step-row" id="lcd-step-eq">
+          <span class="lcd-step-num">2</span>
+          <span class="lcd-step-name">EQ</span>
+          <span class="lcd-step-bar"><span class="lcd-step-fill" id="lcd-fill-eq" style="width:0%"></span></span>
+          <span class="lcd-step-status" id="lcd-status-eq">—</span>
+        </div>
+        <div class="lcd-step-row" id="lcd-step-train">
+          <span class="lcd-step-num">3</span>
+          <span class="lcd-step-name">TRAIN</span>
+          <span class="lcd-step-bar"><span class="lcd-step-fill" id="lcd-fill-train" style="width:0%"></span></span>
+          <span class="lcd-step-status" id="lcd-status-train">—</span>
+        </div>
+      </div>
+    </div>
   </div>
+  <!-- Session controls right -->
   <div class="session-bar">
     <select id="session-select"><option value="">— select session —</option></select>
     <div class="session-btns">
@@ -51,10 +79,91 @@
   </div>
 </div>
 
-<!-- ── Main layout ──────────────────────────────────────────────────────────── -->
+<!-- ── Main layout (workflow left → right) ──────────────────────────────────── -->
 <main class="hidden" id="main-panel">
 
-  <!-- Col 1: RENDER ────────────────────────────────────────────────────────── -->
+  <!-- Col 1: PIPELINE ──────────────────────────────────────────────────────── -->
+  <section class="panel panel-pipeline">
+    <div class="panel-title">PIPELINE</div>
+
+    <!-- Shared settings -->
+    <div class="moog-section" style="padding:6px;gap:4px">
+      <div style="font-size:8px;letter-spacing:2px;color:rgba(255,255,255,0.45);margin-bottom:2px">WAV SOURCE</div>
+      <input id="pipe-wav-dir" type="text" value="C:/SoundBanks/IthacaPlayer/ks-grand" style="width:100%;font-size:10px">
+      <div class="train-row" style="margin-top:4px">
+        <label style="font-size:10px">Profile out
+          <input id="pipe-out" type="text" value="analysis/params_profile.json" style="width:150px;font-size:10px">
+        </label>
+      </div>
+      <div class="train-row" style="margin-top:4px;gap:8px">
+        <label style="font-size:10px">Epochs <input id="pipe-epochs" type="number" value="300" min="10" max="2000" style="width:52px"></label>
+        <label style="font-size:10px">Workers <input id="pipe-workers" type="number" value="4" min="1" max="16" style="width:42px"></label>
+      </div>
+    </div>
+
+    <!-- Step 1: Extract -->
+    <div class="pipeline-step" id="pstep-extract">
+      <div class="pstep-header">
+        <span class="pstep-num">1</span>
+        <span class="pstep-label">EXTRACT PARAMS</span>
+        <span class="pstep-led" id="pled-extract"></span>
+      </div>
+      <div class="pstep-actions">
+        <button id="btn-pipe-extract" class="primary">&#9654; Run</button>
+      </div>
+      <div class="progress-bar hidden" id="pprog-extract-wrap">
+        <div class="progress-track"><div id="pprog-extract-fill" style="width:0%"></div></div>
+      </div>
+      <div id="pstatus-extract" class="status-line"></div>
+      <pre id="plog-extract" class="train-log hidden"></pre>
+    </div>
+
+    <!-- Step 2: Spectral EQ -->
+    <div class="pipeline-step" id="pstep-eq">
+      <div class="pstep-header">
+        <span class="pstep-num">2</span>
+        <span class="pstep-label">SPECTRAL EQ</span>
+        <span class="pstep-led" id="pled-eq"></span>
+      </div>
+      <div class="pstep-actions">
+        <button id="btn-pipe-eq" class="primary">&#9654; Run</button>
+      </div>
+      <div class="progress-bar hidden" id="pprog-eq-wrap">
+        <div class="progress-track"><div id="pprog-eq-fill" style="width:0%"></div></div>
+      </div>
+      <div id="pstatus-eq" class="status-line"></div>
+      <pre id="plog-eq" class="train-log hidden"></pre>
+    </div>
+
+    <!-- Step 3: Train profile -->
+    <div class="pipeline-step" id="pstep-train">
+      <div class="pstep-header">
+        <span class="pstep-num">3</span>
+        <span class="pstep-label">TRAIN PROFILE</span>
+        <span class="pstep-led" id="pled-train"></span>
+      </div>
+      <div class="pstep-actions">
+        <button id="btn-pipe-train" class="primary">&#9654; Run</button>
+      </div>
+      <div class="progress-bar hidden" id="pprog-train-wrap">
+        <div class="progress-track"><div id="pprog-train-fill" style="width:0%"></div></div>
+        <span id="pprog-train-label">0/0</span>
+      </div>
+      <div id="pstatus-train" class="status-line"></div>
+      <pre id="plog-train" class="train-log hidden"></pre>
+    </div>
+
+    <!-- Full pipeline run/cancel -->
+    <div class="pipe-full-actions">
+      <button id="btn-pipe-all" class="primary full-width">&#9654;&#9654; Full Pipeline</button>
+      <button id="btn-pipe-cancel" class="danger full-width hidden">&#9632; Cancel</button>
+      <button id="btn-pipe-apply" class="hidden full-width" style="border-color:#00dd44;color:#00dd44">&#10230; Apply to Session</button>
+    </div>
+    <div id="pipe-status" class="status-line"></div>
+
+  </section>
+
+  <!-- Col 2: RENDER ────────────────────────────────────────────────────────── -->
   <section class="panel panel-params" id="panel-render">
     <div class="section-title">RENDER</div>
     <div class="moog-section">
@@ -62,7 +171,7 @@
     </div>
   </section>
 
-  <!-- Col 2: TIMBRE ────────────────────────────────────────────────────────── -->
+  <!-- Col 3: TIMBRE ────────────────────────────────────────────────────────── -->
   <section class="panel panel-params" id="panel-timbre">
     <div class="section-title">TIMBRE</div>
     <div class="moog-section">
@@ -70,7 +179,7 @@
     </div>
   </section>
 
-  <!-- Col 3: STEREO ────────────────────────────────────────────────────────── -->
+  <!-- Col 4: STEREO ────────────────────────────────────────────────────────── -->
   <section class="panel panel-params" id="panel-stereo">
     <div class="section-title">STEREO</div>
     <div class="moog-section">
@@ -78,7 +187,7 @@
     </div>
   </section>
 
-  <!-- Col 4: PER-NOTE ──────────────────────────────────────────────────────── -->
+  <!-- Col 5: PER-NOTE ──────────────────────────────────────────────────────── -->
   <section class="panel panel-params" id="panel-per-note">
     <div class="section-title">PER-NOTE</div>
     <div class="note-picker">
@@ -93,7 +202,7 @@
     <button id="btn-save-params" class="primary full-width">Save Parameters</button>
   </section>
 
-  <!-- Col 5: GENERATE ──────────────────────────────────────────────────────── -->
+  <!-- Col 6: GENERATE ──────────────────────────────────────────────────────── -->
   <section class="panel panel-generate">
     <div class="panel-title">GENERATE</div>
 
@@ -124,40 +233,6 @@
       <div id="vel-profile-status" class="status-line"></div>
     </div>
 
-    <div class="panel-title" style="margin-top:0.5rem">TRAIN DDSP PROFILE</div>
-    <div class="moog-section" style="padding:6px">
-      <div class="train-row">
-        <input id="train-wav-dir" type="text" value="C:/SoundBanks/IthacaPlayer/ks-grand" style="flex:1;font-size:10px">
-      </div>
-      <div class="train-row" style="margin-top:4px">
-        <label style="font-size:10px">Output <input id="train-out" type="text" value="analysis/params_profile.json" style="width:170px;font-size:10px"></label>
-      </div>
-      <div class="train-row" style="margin-top:4px;gap:8px">
-        <label style="font-size:10px">Epochs <input id="train-epochs" type="number" value="300" min="10" max="2000" style="width:52px"></label>
-        <label style="font-size:10px">K-max  <input id="train-kmax"   type="number" value="16"  min="4"  max="32"   style="width:42px"></label>
-        <label style="font-size:10px">Seg(s) <input id="train-seg"    type="number" value="0.5" min="0.2" max="3" step="0.1" style="width:42px"></label>
-      </div>
-      <div class="train-row" style="margin-top:4px;gap:12px">
-        <label style="font-size:10px"><input type="checkbox" id="train-preserve-orig"> Preserve originals</label>
-        <label style="font-size:10px">Init from
-          <select id="train-init" style="font-size:10px">
-            <option value="">— random —</option>
-          </select>
-        </label>
-      </div>
-      <div class="train-actions" style="margin-top:6px">
-        <button id="btn-train-ddsp" class="primary">&#9654; Train DDSP</button>
-        <button id="btn-train-cancel" class="danger hidden">&#9632; Cancel</button>
-        <button id="btn-train-apply" class="hidden" style="border-color:#00dd44;color:#00dd44">&#10230; Apply</button>
-      </div>
-      <div class="progress-bar hidden" id="train-progress-wrap">
-        <div class="progress-track"><div id="train-progress-fill" style="width:0%"></div></div>
-        <span id="train-progress-label">0 / 0</span>
-      </div>
-      <div id="train-status" class="status-line"></div>
-      <pre id="train-log" class="train-log hidden"></pre>
-    </div>
-
     <div class="progress-bar hidden" id="progress-wrap">
       <div class="progress-track"><div id="progress-fill" style="width:0%"></div></div>
       <span id="progress-label">0 / 0</span>
@@ -166,7 +241,7 @@
 
   </section>
 
-  <!-- Col 6: PLAYER + SPECTRUM + GENERATED FILES ───────────────────────────── -->
+  <!-- Col 7: PLAYER + SPECTRUM + GENERATED FILES ───────────────────────────── -->
   <section class="panel panel-audio">
     <div class="panel-title">PLAYER</div>
     <audio id="audio-player" controls></audio>

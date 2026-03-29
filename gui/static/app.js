@@ -689,113 +689,8 @@ el('btn-delete-session').addEventListener('click', async () => {
   await selectSession('');
 });
 
-// ── DDSP training ─────────────────────────────────────────────────────────────
-const PROFILE_API = (path) => `/api/profile${path}`;
-
-let trainPollTimer = null;
-
-el('btn-train-apply').addEventListener('click', async () => {
-  if (!state.session) {
-    el('train-status').textContent = 'Select a session first.';
-    return;
-  }
-  try {
-    await fetch(PROFILE_API(`/apply/${state.session}`), { method: 'POST' });
-    el('btn-train-apply').classList.add('hidden');
-    el('train-status').textContent = `✓ Applied to session "${state.session}" — reload params to see changes`;
-    await reloadConfig();
-  } catch (e) {
-    el('train-status').textContent = 'Apply error: ' + e.message;
-  }
-});
-
-el('btn-train-ddsp').addEventListener('click', async () => {
-  el('btn-train-apply').classList.add('hidden');
-  const initVal = el('train-init').value.trim();
-  const body = {
-    wav_dir:      el('train-wav-dir').value.trim(),
-    out:          el('train-out').value.trim(),
-    epochs:       parseInt(el('train-epochs').value),
-    kmax:         parseInt(el('train-kmax').value),
-    seg:          parseFloat(el('train-seg').value),
-    preserve_orig: el('train-preserve-orig').checked,
-    init:         initVal,
-  };
-  try {
-    const res = await fetch(PROFILE_API('/train'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      el('train-status').textContent = 'Error: ' + (err.detail || res.statusText);
-      return;
-    }
-    el('btn-train-ddsp').classList.add('hidden');
-    el('btn-train-cancel').classList.remove('hidden');
-    el('train-progress-wrap').classList.remove('hidden');
-    el('train-log').classList.add('hidden');
-    el('train-log').textContent = '';
-    el('train-status').textContent = 'Loading WAV files…';
-    trainPollTimer = setInterval(pollTrainStatus, 1000);
-  } catch (e) {
-    el('train-status').textContent = 'Error: ' + e.message;
-  }
-});
-
-el('btn-train-cancel').addEventListener('click', async () => {
-  await fetch(PROFILE_API('/cancel'), { method: 'POST' }).catch(() => {});
-  el('train-status').textContent = 'Cancelling…';
-});
-
-async function pollTrainStatus() {
-  try {
-    const res = await fetch(PROFILE_API('/status'));
-    if (!res.ok) return;
-    const j = await res.json();
-
-    el('train-progress-fill').style.width = (j.progress_pct || 0) + '%';
-    el('train-progress-label').textContent = `${j.epoch || 0} / ${j.total || 0}`;
-
-    // Update log box
-    const logEl = el('train-log');
-    if (j.log_lines && j.log_lines.length > 0) {
-      logEl.classList.remove('hidden');
-      logEl.textContent = j.log_lines.join('\n');
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    const etaStr = j.eta_s != null
-      ? `  ETA ${j.eta_s >= 60 ? Math.round(j.eta_s/60)+'m' : j.eta_s+'s'}`
-      : '';
-    const lossStr = j.loss != null ? `  loss=${j.loss.toFixed(4)}` : '';
-    const lrStr   = j.lr   != null ? `  lr=${j.lr.toExponential(1)}` : '';
-
-    if (j.status === 'done') {
-      clearInterval(trainPollTimer); trainPollTimer = null;
-      el('btn-train-ddsp').classList.remove('hidden');
-      el('btn-train-cancel').classList.add('hidden');
-      el('train-status').textContent =
-        `✓ Done — ${j.n_nn || 0} NN + ${j.n_orig || 0} orig → ${j.out || ''}`;
-      el('btn-train-apply').classList.remove('hidden');
-      refreshTrainInitSelect();
-    } else if (j.status === 'cancelled') {
-      clearInterval(trainPollTimer); trainPollTimer = null;
-      el('btn-train-ddsp').classList.remove('hidden');
-      el('btn-train-cancel').classList.add('hidden');
-      el('train-status').textContent = 'Cancelled at epoch ' + j.epoch;
-    } else if (j.status === 'error') {
-      clearInterval(trainPollTimer); trainPollTimer = null;
-      el('btn-train-ddsp').classList.remove('hidden');
-      el('btn-train-cancel').classList.add('hidden');
-      el('train-status').textContent = 'Error: ' + (j.error || 'unknown');
-    } else {
-      const statusLabel = { loading: 'Loading WAVs…', running: 'Training', saving: 'Saving profile…' };
-      el('train-status').textContent = (statusLabel[j.status] || j.status) + lossStr + lrStr + etaStr;
-    }
-  } catch (e) { /* ignore transient fetch errors */ }
-}
+// ── DDSP training (legacy — used only for profile /apply endpoint) ────────────
+async function refreshTrainInitSelect() { /* kept for compatibility, no-op */ }
 
 // ── Velocity profile ──────────────────────────────────────────────────────────
 el('btn-vel-profile').addEventListener('click', async () => {
@@ -815,27 +710,217 @@ el('btn-vel-profile').addEventListener('click', async () => {
   }
 });
 
-// ── Init ─────────────────────────────────────────────────────────────────────
-async function refreshTrainInitSelect() {
-  const sel = el('train-init');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">— random —</option>';
-  try {
-    const res = await fetch(PROFILE_API('/models'));
-    const data = await res.json();
-    (data.models || []).forEach(m => {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m.replace('analysis/', '');
-      sel.appendChild(opt);
-    });
-  } catch { /* no models yet */ }
-  if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+// ── Pipeline ──────────────────────────────────────────────────────────────────
+const PIPE_API = (path) => `/api/pipeline${path}`;
+const PIPE_STEPS = ['extract', 'eq', 'train'];
+
+let pipePollTimer = null;
+
+function pipeEl(suffix, step) { return el(`p${suffix}-${step}`); }
+
+function updateLcdStep(step, stepData) {
+  const row = el(`lcd-step-${step}`);
+  const fill = el(`lcd-fill-${step}`);
+  const status = el(`lcd-status-${step}`);
+  if (!row) return;
+
+  const pct = stepData.progress_pct || 0;
+  fill.style.width = pct + '%';
+
+  row.classList.remove('step-running', 'step-done', 'step-error');
+  const s = stepData.status;
+  if (s === 'running') {
+    row.classList.add('step-running');
+    status.textContent = pct ? `${pct}%` : '…';
+  } else if (s === 'done') {
+    row.classList.add('step-done');
+    status.textContent = '✓';
+  } else if (s === 'error') {
+    row.classList.add('step-error');
+    status.textContent = 'ERR';
+  } else if (s === 'skipped') {
+    status.textContent = '—';
+  } else {
+    status.textContent = '—';
+  }
 }
 
+function updatePipelineUI(j) {
+  const steps = j.steps || {};
+  PIPE_STEPS.forEach(step => {
+    const sd = steps[step] || {};
+    const led = pipeEl('led', step);
+    const statusEl = pipeEl('status', step);
+    const logEl = pipeEl('log', step);
+    const progWrap = el(`pprog-${step}-wrap`);
+    const progFill = el(`pprog-${step}-fill`);
+
+    // LED
+    if (led) {
+      led.className = 'pstep-led';
+      if (sd.status === 'running') led.classList.add('led-running');
+      else if (sd.status === 'done') led.classList.add('led-done');
+      else if (sd.status === 'error') led.classList.add('led-error');
+      else if (sd.status === 'skipped') led.classList.add('led-skipped');
+    }
+
+    // Progress bar
+    if (progWrap && progFill) {
+      const pct = sd.progress_pct || 0;
+      if (sd.status === 'running' || sd.status === 'done' || sd.status === 'error') {
+        progWrap.classList.remove('hidden');
+        progFill.style.width = pct + '%';
+      } else {
+        progWrap.classList.add('hidden');
+        progFill.style.width = '0%';
+      }
+    }
+
+    // Train-specific label
+    if (step === 'train' && el('pprog-train-label')) {
+      const ep = sd.epoch || 0;
+      const tot = sd.total || 0;
+      const loss = sd.loss != null ? `  loss=${sd.loss.toFixed(4)}` : '';
+      el('pprog-train-label').textContent = tot > 0 ? `${ep}/${tot}${loss}` : '';
+    }
+
+    // Status text
+    if (statusEl) {
+      if (sd.status === 'running') statusEl.textContent = 'Running…';
+      else if (sd.status === 'done') statusEl.textContent = '✓ Done';
+      else if (sd.status === 'error') statusEl.textContent = `✗ Error (rc=${sd.rc})`;
+      else statusEl.textContent = '';
+    }
+
+    // Log
+    if (logEl && sd.log_lines && sd.log_lines.length > 0) {
+      logEl.classList.remove('hidden');
+      logEl.textContent = sd.log_lines.join('\n');
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // LCD right side
+    updateLcdStep(step, sd);
+  });
+
+  // Global status
+  const statusEl = el('pipe-status');
+  const cancelBtn = el('btn-pipe-cancel');
+  const allBtn = el('btn-pipe-all');
+  const applyBtn = el('btn-pipe-apply');
+
+  if (j.status === 'running') {
+    cancelBtn.classList.remove('hidden');
+    allBtn.classList.add('hidden');
+    applyBtn.classList.add('hidden');
+    statusEl.textContent = `Running: ${j.step || ''}…`;
+  } else if (j.status === 'done') {
+    cancelBtn.classList.add('hidden');
+    allBtn.classList.remove('hidden');
+    applyBtn.classList.remove('hidden');
+    statusEl.textContent = '✓ Pipeline complete';
+    clearInterval(pipePollTimer); pipePollTimer = null;
+  } else if (j.status === 'error') {
+    cancelBtn.classList.add('hidden');
+    allBtn.classList.remove('hidden');
+    statusEl.textContent = `✗ ${j.error || 'Error'}`;
+    clearInterval(pipePollTimer); pipePollTimer = null;
+  } else if (j.status === 'cancelled') {
+    cancelBtn.classList.add('hidden');
+    allBtn.classList.remove('hidden');
+    statusEl.textContent = 'Cancelled';
+    clearInterval(pipePollTimer); pipePollTimer = null;
+  }
+
+  // Enable individual step buttons when not running
+  PIPE_STEPS.forEach(step => {
+    const btn = el(`btn-pipe-${step}`);
+    if (btn) btn.disabled = (j.status === 'running');
+  });
+  allBtn.disabled = (j.status === 'running');
+}
+
+async function pollPipelineStatus() {
+  try {
+    const j = await fetch(PIPE_API('/status')).then(r => r.json());
+    updatePipelineUI(j);
+    if (j.status !== 'running') {
+      clearInterval(pipePollTimer);
+      pipePollTimer = null;
+    }
+  } catch { /* ignore */ }
+}
+
+function startPipelineRun(fromStep) {
+  const body = {
+    wav_dir:   el('pipe-wav-dir').value.trim(),
+    out:       el('pipe-out').value.trim(),
+    epochs:    parseInt(el('pipe-epochs').value),
+    workers:   parseInt(el('pipe-workers').value),
+    from_step: fromStep,
+  };
+  fetch(PIPE_API('/run'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(res => {
+    if (!res.ok) return res.json().then(e => { throw new Error(e.detail || res.statusText); });
+    el('btn-pipe-all').classList.add('hidden');
+    el('btn-pipe-cancel').classList.remove('hidden');
+    el('btn-pipe-apply').classList.add('hidden');
+    el('pipe-status').textContent = `Starting ${fromStep}…`;
+    // Reset LCD for affected steps
+    const fromIdx = PIPE_STEPS.indexOf(fromStep);
+    PIPE_STEPS.forEach((step, i) => {
+      if (i >= fromIdx) {
+        el(`lcd-fill-${step}`).style.width = '0%';
+        el(`lcd-status-${step}`).textContent = '…';
+        el(`lcd-step-${step}`).className = 'lcd-step-row';
+      }
+    });
+    if (!pipePollTimer) pipePollTimer = setInterval(pollPipelineStatus, 900);
+  }).catch(e => {
+    el('pipe-status').textContent = 'Error: ' + e.message;
+  });
+}
+
+el('btn-pipe-all').addEventListener('click', () => startPipelineRun('extract'));
+el('btn-pipe-extract').addEventListener('click', () => startPipelineRun('extract'));
+el('btn-pipe-eq').addEventListener('click', () => startPipelineRun('eq'));
+el('btn-pipe-train').addEventListener('click', () => startPipelineRun('train'));
+
+el('btn-pipe-cancel').addEventListener('click', () => {
+  fetch(PIPE_API('/cancel'), { method: 'POST' }).catch(() => {});
+  el('pipe-status').textContent = 'Cancelling…';
+});
+
+el('btn-pipe-apply').addEventListener('click', async () => {
+  if (!state.session) {
+    el('pipe-status').textContent = 'Select a session first.';
+    return;
+  }
+  try {
+    await fetch(`/api/profile/apply/${state.session}`, { method: 'POST' });
+    el('btn-pipe-apply').classList.add('hidden');
+    el('pipe-status').textContent = `✓ Applied to session "${state.session}"`;
+    await reloadConfig();
+  } catch (e) {
+    el('pipe-status').textContent = 'Apply error: ' + e.message;
+  }
+});
+
+// ── Init ─────────────────────────────────────────────────────────────────────
 initVelCheckboxes();
 loadSessions();
-refreshTrainInitSelect();
+// Poll pipeline status on load to restore any in-progress state
+fetch(PIPE_API('/status')).then(r => r.json()).then(j => {
+  if (j.status === 'running') {
+    el('btn-pipe-all').classList.add('hidden');
+    el('btn-pipe-cancel').classList.remove('hidden');
+    pipePollTimer = setInterval(pollPipelineStatus, 900);
+  }
+  updatePipelineUI(j);
+}).catch(() => {});
 
 // Note name update on midi input
 el('note-midi').addEventListener('input', () => {

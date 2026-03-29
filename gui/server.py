@@ -29,7 +29,7 @@ for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from gui.routers import sessions, generate, audio, profile
+from gui.routers import sessions, generate, audio, profile, pipeline
 
 app = FastAPI(title="Resonator Synth GUI", version="1.0.0")
 log.info("Resonator Synth GUI starting on port 8989")
@@ -45,6 +45,7 @@ app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(generate.router, prefix="/api/sessions", tags=["generate"])
 app.include_router(audio.router,    prefix="/api/sessions", tags=["audio"])
 app.include_router(profile.router,  prefix="/api",          tags=["profile"])
+app.include_router(pipeline.router, prefix="/api",          tags=["pipeline"])
 
 # Serve generated audio from all sessions
 app.mount("/audio", StaticFiles(directory="gui/sessions"), name="audio")
