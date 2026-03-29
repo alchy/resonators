@@ -61,6 +61,16 @@ private:
 
     float width_factor_ = 0.5f; // M/S stereo width
 
+    // ── Stereo decorrelation (Schroeder first-order all-pass) ─────────────────
+    // lfilter([-g, 1.0], [1.0, g], x) — different g sign per channel = decorrelation
+    float ap_x_l_      = 0.f;  // previous input, L
+    float ap_y_l_      = 0.f;  // previous output, L
+    float ap_x_r_      = 0.f;  // previous input, R
+    float ap_y_r_      = 0.f;  // previous output, R
+    float ap_g_l_      = 0.f;  // all-pass coefficient L (positive, ~0.35..0.60)
+    float ap_g_r_      = 0.f;  // all-pass coefficient R (negative, ~-0.35..-0.54)
+    float ap_strength_ = 0.f;  // decorrelation blend (0 = bypass)
+
     // ── Release ramp ─────────────────────────────────────────────────────────
     float release_gain_ = 1.f;
     float release_step_ = 0.f;   // negative, computed from RELEASE_MS

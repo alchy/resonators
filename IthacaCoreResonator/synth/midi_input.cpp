@@ -15,6 +15,12 @@
 #include "midi_input.h"
 #include <iostream>
 #include <stdexcept>
+#include <chrono>
+
+static uint64_t nowMs() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 // ── listPorts ─────────────────────────────────────────────────────────────────
 
@@ -98,26 +104,34 @@ void MidiInput::callback(double /*ts*/,
     uint8_t data2   = (msg->size() > 2) ? (*msg)[2] : 0;
     uint8_t type    = status & 0xF0;
 
+    uint64_t t = nowMs();
+    self->activity_.any_ms.store(t, std::memory_order_relaxed);
+
     switch (type) {
         case 0x90:  // Note On
-            if (data2 > 0)
+            if (data2 > 0) {
+                self->activity_.note_on_ms.store(t, std::memory_order_relaxed);
                 self->engine_->noteOn(data1, data2);
-            else
+            } else {
+                self->activity_.note_off_ms.store(t, std::memory_order_relaxed);
                 self->engine_->noteOff(data1);  // velocity 0 = note off
+            }
             break;
 
         case 0x80:  // Note Off
+            self->activity_.note_off_ms.store(t, std::memory_order_relaxed);
             self->engine_->noteOff(data1);
             break;
 
         case 0xB0:  // Control Change
             switch (data1) {
-                case 64:  self->engine_->sustainPedal(data2);               break;  // sustain
-                case 7:   self->engine_->setAllVoicesMasterGain(data2);     break;  // volume
-                case 10:  self->engine_->setAllVoicesPan(data2);            break;  // pan
-                case 93:  self->engine_->setAllVoicesPanSpeed(data2);       break;  // chorus → LFO speed
-                case 91:  self->engine_->setAllVoicesPanDepth(data2);       break;  // reverb → LFO depth
-                case 74:  self->engine_->setLimiterThreshold(data2);        break;  // brightness → limiter
+                case 64:  self->activity_.pedal_ms.store(t, std::memory_order_relaxed);
+                          self->engine_->sustainPedal(data2);               break;
+                case 7:   self->engine_->setAllVoicesMasterGain(data2);     break;
+                case 10:  self->engine_->setAllVoicesPan(data2);            break;
+                case 93:  self->engine_->setAllVoicesPanSpeed(data2);       break;
+                case 91:  self->engine_->setAllVoicesPanDepth(data2);       break;
+                case 74:  self->engine_->setLimiterThreshold(data2);        break;
                 default:  break;
             }
             break;

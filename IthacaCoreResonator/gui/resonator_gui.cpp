@@ -25,6 +25,12 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <chrono>
+
+static uint64_t guiNowMs() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 // ── Piano key layout constants ────────────────────────────────────────────────
 static constexpr int   PIANO_MIDI_LOW  = 36;   // C2
@@ -304,7 +310,19 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
             gs.midi_connected ? ImVec4(0.4f,1.f,0.4f,1.f) : ImVec4(1.f,0.4f,0.4f,1.f),
             gs.midi_connected ? "MIDI: connected" : "MIDI: not connected");
         ImGui::SameLine(0, 20.f);
-        ImGui::Text("Voices: %d", gs.active_voices);
+        ImGui::Text("Voices: %d  |  Stereo 48kHz", gs.active_voices);
+        // LFO activity badge
+        bool lfo_active = gs.lfo_speed > 0 && gs.lfo_depth > 0;
+        ImGui::SameLine(0, 14.f);
+        if (lfo_active) {
+            // Animate a simple phase indicator (changes color over time)
+            float t = (float)ImGui::GetTime();
+            float pulse = 0.5f + 0.5f * std::sin(t * 2.f * 3.14159f *
+                          (2.f * gs.lfo_speed / 127.f));
+            ImGui::TextColored({0.3f + 0.7f*pulse, 0.8f, 1.f, 1.f}, "LFO");
+        } else {
+            ImGui::TextDisabled("LFO off");
+        }
         if (gs.sustain_on) {
             ImGui::SameLine(0, 10.f);
             ImGui::TextColored({1.f,0.9f,0.2f,1.f}, "[SUSTAIN]");
@@ -315,6 +333,56 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
         if (ImGui::SmallButton("Refresh")) {
             gs.ports = MidiInput::listPorts();
             gs.selected_port = 0;
+        }
+
+        ImGui::Separator();
+
+        // ── MIDI activity indicators ──────────────────────────────────────────
+        // LED dot + label, lights green for 80 ms after each event
+        {
+            const uint64_t now   = guiNowMs();
+            const uint64_t flash = 80;
+            const auto& act      = midi_in.activity();
+
+            auto midiLed = [&](const char* label, uint64_t last_ms) {
+                float        r   = 5.f;
+                float        th  = ImGui::GetTextLineHeight();
+                ImVec2       p   = ImGui::GetCursorScreenPos();
+                bool         lit = (last_ms > 0) && ((now - last_ms) < flash);
+                ImU32        col = lit ? IM_COL32(50, 230, 80, 255)
+                                       : IM_COL32(35, 65, 35, 220);
+                ImU32        rim = lit ? IM_COL32(120, 255, 140, 180)
+                                       : IM_COL32(60, 90, 60, 160);
+                ImGui::GetWindowDrawList()->AddCircleFilled(
+                    {p.x + r, p.y + th * 0.5f}, r, col);
+                ImGui::GetWindowDrawList()->AddCircle(
+                    {p.x + r, p.y + th * 0.5f}, r, rim, 12, 1.f);
+                ImGui::Dummy({r * 2.f + 2.f, th});
+                ImGui::SameLine(0, 3.f);
+                if (lit)
+                    ImGui::TextColored({0.4f, 1.f, 0.5f, 1.f}, "%s", label);
+                else
+                    ImGui::TextDisabled("%s", label);
+            };
+
+            auto ledSep = [&]() {
+                ImGui::SameLine(0, 10.f);
+                ImVec2 pos = ImGui::GetCursorScreenPos();
+                float  cy  = pos.y + ImGui::GetTextLineHeight() * 0.5f;
+                ImGui::GetWindowDrawList()->AddLine(
+                    {pos.x, cy}, {pos.x + 14.f, cy},
+                    ImGui::GetColorU32(ImGuiCol_Separator), 1.f);
+                ImGui::Dummy({14.f, ImGui::GetTextLineHeight()});
+                ImGui::SameLine(0, 10.f);
+            };
+
+            midiLed("MIDI DATA",   act.any_ms.load(std::memory_order_relaxed));
+            ledSep();
+            midiLed("Note ON",     act.note_on_ms.load(std::memory_order_relaxed));
+            ledSep();
+            midiLed("Note OFF",    act.note_off_ms.load(std::memory_order_relaxed));
+            ledSep();
+            midiLed("Pedal Event", act.pedal_ms.load(std::memory_order_relaxed));
         }
 
         ImGui::Separator();
@@ -405,6 +473,40 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
                     engine.setAllVoicesPanDepth(gs.lfo_depth);
                 }
             }
+            // Pan position indicator: animated dot sweeping L↔R
+            {
+                bool active = gs.lfo_speed > 0 && gs.lfo_depth > 0;
+                ImDrawList* dl2 = ImGui::GetWindowDrawList();
+                float bar_w = ImGui::GetContentRegionAvail().x;
+                ImVec2 bar_pos = ImGui::GetCursorScreenPos();
+                float bar_h = 10.f;
+                // Background track
+                dl2->AddRectFilled(bar_pos,
+                    {bar_pos.x + bar_w, bar_pos.y + bar_h},
+                    IM_COL32(40,40,40,200), 3.f);
+                // Moving dot
+                float pos_x = bar_pos.x + bar_w * 0.5f;
+                if (active) {
+                    float t = (float)ImGui::GetTime();
+                    float hz = 2.f * (gs.lfo_speed / 127.f);
+                    float depth = gs.lfo_depth / 127.f;
+                    float lfo_val = depth * std::sin(t * 2.f * 3.14159f * hz);
+                    pos_x = bar_pos.x + bar_w * 0.5f * (1.f + lfo_val);
+                }
+                ImU32 dot_col = active ? IM_COL32(80,200,255,255)
+                                       : IM_COL32(80,80,80,180);
+                dl2->AddCircleFilled({pos_x, bar_pos.y + bar_h*0.5f}, 5.f, dot_col);
+                // L / R labels
+                dl2->AddText({bar_pos.x, bar_pos.y}, IM_COL32(120,120,120,200), "L");
+                dl2->AddText({bar_pos.x + bar_w - 8.f, bar_pos.y},
+                    IM_COL32(120,120,120,200), "R");
+                ImGui::Dummy({bar_w, bar_h + 2.f});
+                if (!active) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(140,140,140,255));
+                    ImGui::TextUnformatted("Set Speed AND Depth > 0 to enable");
+                    ImGui::PopStyleColor();
+                }
+            }
 
             // ╔══════════════════╗  ╔══════════════════╗
             // ║    LIMITER       ║  ║      BBE         ║
@@ -414,11 +516,22 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
             ImGui::TableSetColumnIndex(0);
             {
                 bool ena = gs.limiter_enabled;
-                ImGui::SeparatorText("LIMITER");
-                ImGui::SameLine();
                 if (ImGui::Checkbox("##limon", &ena)) {
                     gs.limiter_enabled = ena;
                     if (dsp) dsp->setLimiterEnabled(ena ? 127 : 0);
+                }
+                ImGui::SameLine();
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("LIMITER");
+                ImGui::SameLine();
+                {
+                    ImVec2 pos = ImGui::GetCursorScreenPos();
+                    float  w   = ImGui::GetContentRegionAvail().x;
+                    float  mid = pos.y + ImGui::GetFrameHeight() * 0.5f;
+                    ImGui::GetWindowDrawList()->AddLine(
+                        {pos.x + 4.f, mid}, {pos.x + w, mid},
+                        ImGui::GetColorU32(ImGuiCol_Separator));
+                    ImGui::Dummy({w, 0.f});
                 }
             }
             {
@@ -462,14 +575,25 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
             ImGui::TableSetColumnIndex(1);
             {
                 bool ena = gs.bbe_enabled;
-                ImGui::SeparatorText("BBE  Sonic Maximizer");
-                ImGui::SameLine();
                 if (ImGui::Checkbox("##bbeon", &ena)) {
                     gs.bbe_enabled = ena;
                     if (dsp) {
                         dsp->setBBEDefinition(ena ? gs.bbe_def : 0);
                         dsp->setBBEBassBoost (ena ? gs.bbe_bass : 0);
                     }
+                }
+                ImGui::SameLine();
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("BBE  Sonic Maximizer");
+                ImGui::SameLine();
+                {
+                    ImVec2 pos = ImGui::GetCursorScreenPos();
+                    float  w   = ImGui::GetContentRegionAvail().x;
+                    float  mid = pos.y + ImGui::GetFrameHeight() * 0.5f;
+                    ImGui::GetWindowDrawList()->AddLine(
+                        {pos.x + 4.f, mid}, {pos.x + w, mid},
+                        ImGui::GetColorU32(ImGuiCol_Separator));
+                    ImGui::Dummy({w, 0.f});
                 }
             }
             {
