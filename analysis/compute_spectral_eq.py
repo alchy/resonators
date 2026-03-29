@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import math
 import sys
 import traceback
 from multiprocessing import Pool
@@ -31,9 +32,14 @@ from analysis.physics_synth import synthesize_note  # noqa: E402
 
 # ── STFT / LTASE parameters ───────────────────────────────────────────────────
 
-N_FFT = 8192
-HOP   = 2048
 SR    = 44100
+
+# Adaptive N_FFT: target 20 bins per harmonic (same as extract_params.py).
+# Clamped [2^13=8192, 2^15=32768] — ensures enough frequency resolution for
+# bass notes while keeping computation tractable and hop reasonable.
+NFFT_BINS_TARGET = 20
+NFFT_EXP_MIN     = 13   # 8192  — floor (high notes, keeps behaviour unchanged)
+NFFT_EXP_MAX     = 15   # 32768 — ceiling (A0: 1.35 Hz/bin, 2.4 bins per 1/6-oct)
 
 # EQ frequency grid
 N_EQ_POINTS = 64
@@ -42,6 +48,15 @@ EQ_F_MAX    = 20000.0
 
 # 1/6-octave smoothing: half-width in octaves
 SMOOTH_OCT = 1.0 / 12.0  # 1/12 oct each side = 1/6 oct window
+
+
+def _adaptive_nfft(midi: int) -> tuple[int, int]:
+    """Return (N_FFT, HOP) for the given MIDI note using adaptive window sizing."""
+    f0 = 440.0 * 2.0 ** ((midi - 69) / 12.0)
+    raw = int(NFFT_BINS_TARGET * SR / f0)
+    exp = max(NFFT_EXP_MIN, min(NFFT_EXP_MAX, round(math.log2(raw))))
+    nfft = 1 << exp
+    return nfft, nfft // 4
 
 
 # ── Global params dict (for multiprocessing) ─────────────────────────────────
@@ -110,12 +125,15 @@ def process_sample(key: str):
         SM_synth = rms(syn_S) / rms(syn_M)
         width_factor = float(np.clip(SM_orig / SM_synth, 0.2, 8.0))
 
-        # ── LTASE via STFT ─────────────────────────────────────────────────
-        ltase_orig = _compute_ltase(orig_mono)
-        ltase_synth = _compute_ltase(synth_mono)
+        # ── Adaptive N_FFT for this MIDI note ─────────────────────────────
+        n_fft, hop = _adaptive_nfft(midi)
 
-        # Frequency axis for N_FFT/2+1 bins
-        freqs_fft = np.linspace(0.0, SR / 2.0, N_FFT // 2 + 1)
+        # ── LTASE via STFT ─────────────────────────────────────────────────
+        ltase_orig  = _compute_ltase(orig_mono,  n_fft, hop)
+        ltase_synth = _compute_ltase(synth_mono, n_fft, hop)
+
+        # Frequency axis for n_fft/2+1 bins
+        freqs_fft = np.linspace(0.0, SR / 2.0, n_fft // 2 + 1)
 
         # ── Ratio with regularization ──────────────────────────────────────
         eps = max(ltase_synth.max(), ltase_orig.max()) * 1e-3
@@ -141,7 +159,7 @@ def process_sample(key: str):
 
         max_gain  = eq_gains.max()
         range_db  = eq_gains.max() - eq_gains.min()
-        print(f"  {key} ... EQ peak={max_gain:.1f}dB range={range_db:.1f}dB  width_factor={width_factor:.3f}")
+        print(f"  {key} ... N_FFT={n_fft}  EQ peak={max_gain:.1f}dB range={range_db:.1f}dB  width_factor={width_factor:.3f}")
 
         return key, {
             'freqs_hz': eq_freqs.tolist(),
@@ -156,17 +174,17 @@ def process_sample(key: str):
 
 # ── STFT helpers ──────────────────────────────────────────────────────────────
 
-def _compute_ltase(audio: np.ndarray) -> np.ndarray:
+def _compute_ltase(audio: np.ndarray, n_fft: int, hop: int) -> np.ndarray:
     """
     Long-Time Average Spectral Envelope via STFT.
-    Returns 1-D array of shape (N_FFT//2 + 1,): mean magnitude over time.
+    Returns 1-D array of shape (n_fft//2 + 1,): mean magnitude over time.
     """
-    window = np.hanning(N_FFT)
-    n_bins = N_FFT // 2 + 1
+    window = np.hanning(n_fft)
+    n_bins = n_fft // 2 + 1
     frames = []
-    for start in range(0, len(audio) - N_FFT + 1, HOP):
-        frame = audio[start: start + N_FFT] * window
-        spec  = np.fft.rfft(frame, n=N_FFT)
+    for start in range(0, len(audio) - n_fft + 1, hop):
+        frame = audio[start: start + n_fft] * window
+        spec  = np.fft.rfft(frame, n=n_fft)
         frames.append(np.abs(spec))
     if not frames:
         return np.ones(n_bins)
