@@ -541,7 +541,6 @@ input[type="checkbox"] { accent-color: var(--led-green); }
 .vel-sep { color: var(--white-dim); padding: 0 2px; }
 
 .gen-actions { display: flex; gap: 0.5rem; }
-.vel-profile-row { display: flex; gap: 0.5rem; align-items: center; margin-top: 4px; }
 .train-row { display: flex; gap: 0.5rem; align-items: center; font-size: 10px; }
 .train-actions { display: flex; gap: 0.5rem; }
 

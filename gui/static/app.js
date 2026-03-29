@@ -692,23 +692,6 @@ el('btn-delete-session').addEventListener('click', async () => {
 // ── DDSP training (legacy — used only for profile /apply endpoint) ────────────
 async function refreshTrainInitSelect() { /* kept for compatibility, no-op */ }
 
-// ── Velocity profile ──────────────────────────────────────────────────────────
-el('btn-vel-profile').addEventListener('click', async () => {
-  if (!state.session) return;
-  const bankDir = el('bank-dir').value.trim();
-  el('vel-profile-status').textContent = 'Computing velocity profile from original WAVs…';
-  try {
-    const data = await apiFetch(`/${state.session}/velocity_profile`, {
-      method: 'POST',
-      body: JSON.stringify({ bank_dir: bankDir }),
-    });
-    const p = data.velocity_rms_profile;
-    const summary = Object.entries(p).map(([v, r]) => `v${v}=${r}`).join('  ');
-    el('vel-profile-status').textContent = `✓ ${data.n_samples_measured} files measured · ${summary}`;
-  } catch (e) {
-    el('vel-profile-status').textContent = 'Error: ' + e.message;
-  }
-});
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 const PIPE_API = (path) => `/api/pipeline${path}`;
@@ -900,10 +883,15 @@ el('btn-pipe-apply').addEventListener('click', async () => {
     return;
   }
   try {
-    await fetch(`/api/profile/apply/${state.session}`, { method: 'POST' });
+    const res = await fetch(PIPE_API(`/apply/${state.session}`), { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    const data = await res.json();
     el('btn-pipe-apply').classList.add('hidden');
-    el('pipe-status').textContent = `✓ Applied to session "${state.session}"`;
+    const prof = data.vel_profile || {};
+    const summary = Object.entries(prof).map(([v, r]) => `v${v}=${r}`).join(' ');
+    el('pipe-status').textContent = `✓ Applied — vel: ${summary}`;
     await reloadConfig();
+    renderVelProfileSliders();
   } catch (e) {
     el('pipe-status').textContent = 'Apply error: ' + e.message;
   }

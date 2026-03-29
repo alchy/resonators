@@ -9,8 +9,6 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
-import soundfile as sf
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -191,67 +189,3 @@ def get_params_summary(name: str):
     return {"notes": notes}
 
 
-# ── Velocity RMS profile ──────────────────────────────────────────────────────
-
-class VelProfileRequest(BaseModel):
-    bank_dir: str = "C:/SoundBanks/IthacaPlayer/ks-grand"
-
-
-@router.post("/{name}/velocity_profile")
-def compute_velocity_profile(name: str, body: VelProfileRequest):
-    """
-    Compute per-velocity RMS from original WAV files and store in session config.
-    Result: velocity_rms_profile = {vel: ratio} where vel=7 ratio=1.0 (reference).
-    Used by generate job to scale target_rms per velocity layer.
-    """
-    bank = Path(body.bank_dir)
-    if not bank.exists():
-        raise HTTPException(400, f"Bank dir not found: {bank}")
-
-    cfg = load_config(name)
-    params_path = session_dir(name) / "params.json"
-    data = json.loads(params_path.read_text())
-
-    # Collect RMS per velocity (average across all MIDI notes)
-    vel_rms_sum = {v: 0.0 for v in range(8)}
-    vel_rms_count = {v: 0 for v in range(8)}
-
-    for key, s in data["samples"].items():
-        midi = s["midi"]
-        vel = s["vel"]
-        wav = bank / f"m{midi:03d}-vel{vel}-f44.wav"
-        if not wav.exists():
-            continue
-        try:
-            audio, _ = sf.read(str(wav), dtype="float32", always_2d=True)
-            # Use first 0.5s (attack + sustain onset) for consistent measurement
-            n = min(len(audio), int(0.5 * 44100))
-            rms = float(np.sqrt(np.mean(audio[:n] ** 2)))
-            if rms > 1e-8:
-                vel_rms_sum[vel] += rms
-                vel_rms_count[vel] += 1
-        except Exception:
-            pass
-
-    # Average RMS per velocity
-    avg_rms = {}
-    for v in range(8):
-        if vel_rms_count[v] > 0:
-            avg_rms[v] = vel_rms_sum[v] / vel_rms_count[v]
-
-    if not avg_rms:
-        raise HTTPException(500, "No WAV files found in bank dir")
-
-    # Normalize to velocity 7 (or highest available)
-    ref_vel = max(avg_rms.keys())
-    ref_rms = avg_rms[ref_vel]
-    profile = {str(v): round(rms / ref_rms, 4) for v, rms in sorted(avg_rms.items())}
-
-    cfg["velocity_rms_profile"] = profile
-    save_config(name, cfg)
-
-    return {
-        "velocity_rms_profile": profile,
-        "reference_velocity": ref_vel,
-        "n_samples_measured": sum(vel_rms_count.values()),
-    }
