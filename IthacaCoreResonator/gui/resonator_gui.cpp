@@ -696,9 +696,9 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
 
                     auto frow = [](const char* name, const char* val, const char* unit) {
                         ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(210,200,140,220));
-                        ImGui::Text("%s", name);
+                        ImGui::Text("%-14s", name);   // pad to 14 → values align
                         ImGui::PopStyleColor();
-                        ImGui::SameLine(0, 4);
+                        ImGui::SameLine(0, 0);
                         ImGui::Text("%s %s", val, unit);
                     };
 
@@ -735,10 +735,10 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
 
                     auto cv = [](const char* name, const char* fmt, float val, const char* unit) {
                         ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(160,200,255,200));
-                        ImGui::Text("%s", name);
+                        ImGui::Text("%-14s", name);   // pad to 14 → values align
                         ImGui::PopStyleColor();
                         char buf[32]; snprintf(buf, sizeof(buf), fmt, val);
-                        ImGui::SameLine(0,4); ImGui::Text("%s %s", buf, unit);
+                        ImGui::SameLine(0, 0); ImGui::Text("%s %s", buf, unit);
                     };
 
                     // STEREO col
@@ -830,7 +830,7 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
                         ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY;
                     float row_h = ImGui::GetTextLineHeightWithSpacing();
-                    float tbl_h = 7.5f * row_h;  // ~7 rows visible, scroll for rest
+                    float tbl_h = 12.5f * row_h;  // ~12 rows visible, scroll for rest
 
                     if (ImGui::BeginTable("##partials", 8, ptf, {0.f, tbl_h})) {
                         ImGui::TableSetupScrollFreeze(0, 1);
