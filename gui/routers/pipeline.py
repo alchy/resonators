@@ -309,9 +309,8 @@ def cancel_pipeline():
 
 @router.get("/pipeline/egrb_status")
 def get_egrb_status():
-    """Read last line of checkpoints/train.log and return current EGRB training state."""
-    import os
-    log_path = Path("checkpoints/train.log")
+    """Read last line of runtime-logs/train-profile-log.txt and return current training state."""
+    log_path = Path("runtime-logs/train-profile-log.txt")
     if not log_path.exists():
         return {"status": "idle", "epoch": 0, "total": 0, "phase": None, "loss": None, "active": False}
 
@@ -319,30 +318,28 @@ def get_egrb_status():
     age_s = time.time() - log_path.stat().st_mtime
     active = age_s < 120
 
-    # Parse last non-empty line
+    # Find last line matching epoch pattern: "epoch  800/800  loss=..."
     last_line = ""
     with open(log_path, "r", encoding="utf-8") as f:
         for line in f:
-            if line.strip():
+            if re.search(r'epoch\s+\d+\s*/\s*\d+', line, re.IGNORECASE):
                 last_line = line.strip()
 
     if not last_line:
         return {"status": "idle", "epoch": 0, "total": 0, "phase": None, "loss": None, "active": False}
 
-    m_ep = re.search(r'Epoch\s+(\d+)\s*/\s*(\d+)', last_line)
-    m_ph = re.search(r'\[(phase\d)\]', last_line)
-    m_lo = re.search(r'total=([\d.]+)', last_line)
+    m_ep = re.search(r'epoch\s+(\d+)\s*/\s*(\d+)', last_line, re.IGNORECASE)
+    m_lo = re.search(r'loss=([\d.]+)', last_line)
 
     epoch = int(m_ep.group(1)) if m_ep else 0
     total = int(m_ep.group(2)) if m_ep else 0
-    phase = m_ph.group(1) if m_ph else None
     loss  = float(m_lo.group(1)) if m_lo else None
 
     return {
         "status": "running" if active else "stopped",
         "epoch":  epoch,
         "total":  total,
-        "phase":  phase,
+        "phase":  None,
         "loss":   loss,
         "active": active,
         "age_s":  int(age_s),
