@@ -13,6 +13,7 @@
 
 #include "note_params.h"
 #include "resonator_voice.h"
+#include "synth_config.h"
 #include "../sampler/core_logger.h"
 #include "../dsp/dsp_chain.h"
 
@@ -113,6 +114,40 @@ public:
 
     DspChain* getDspChain() noexcept { return &dsp_chain_; }
 
+    // Output peak level (linear, after full DSP chain). -20 dB/s decay.
+    // Thread-safe: written by audio thread, read by GUI thread.
+    float getOutputPeakLin() const noexcept {
+        return output_peak_lin_.load(std::memory_order_relaxed);
+    }
+
+    // ── Synthesis rendering config (mirrors physics_synth.py kwargs) ──────────
+    // Changes take effect on next noteOn.
+    void setSynthPanSpread         (float v) noexcept { synth_cfg_.pan_spread          = v; }
+    void setSynthBeatScale         (float v) noexcept { synth_cfg_.beat_scale          = v; }
+    void setSynthStereoDecorr      (float v) noexcept { synth_cfg_.stereo_decorr       = v; }
+    void setSynthStereoBoost       (float v) noexcept { synth_cfg_.stereo_boost        = v; }
+    void setSynthEqStrength        (float v) noexcept { synth_cfg_.eq_strength         = v; }
+    void setSynthEqFreqMin         (float v) noexcept { synth_cfg_.eq_freq_min         = v; }
+    void setSynthNoiseLevel        (float v) noexcept { synth_cfg_.noise_level         = v; }
+    void setSynthOnsetMs           (float v) noexcept { synth_cfg_.onset_ms            = v; }
+    void setSynthHarmonicBrightness(float v) noexcept { synth_cfg_.harmonic_brightness = v; }
+    void setSynthTargetRms         (float v) noexcept { synth_cfg_.target_rms          = v; }
+    void setSynthVelGamma          (float v) noexcept { synth_cfg_.vel_gamma           = v; }
+
+    float getSynthPanSpread()          const noexcept { return synth_cfg_.pan_spread;          }
+    float getSynthBeatScale()          const noexcept { return synth_cfg_.beat_scale;          }
+    float getSynthStereoDecorr()       const noexcept { return synth_cfg_.stereo_decorr;       }
+    float getSynthStereoBoost()        const noexcept { return synth_cfg_.stereo_boost;        }
+    float getSynthEqStrength()         const noexcept { return synth_cfg_.eq_strength;         }
+    float getSynthEqFreqMin()          const noexcept { return synth_cfg_.eq_freq_min;         }
+    float getSynthNoiseLevel()         const noexcept { return synth_cfg_.noise_level;         }
+    float getSynthOnsetMs()            const noexcept { return synth_cfg_.onset_ms;            }
+    float getSynthHarmonicBrightness() const noexcept { return synth_cfg_.harmonic_brightness; }
+    float getSynthTargetRms()          const noexcept { return synth_cfg_.target_rms;          }
+    float getSynthVelGamma()           const noexcept { return synth_cfg_.vel_gamma;           }
+
+    const SynthConfig& getSynthConfig() const noexcept { return synth_cfg_; }
+
 private:
     void handleNoteOn (uint8_t midi, uint8_t vel) noexcept;
     void handleNoteOff(uint8_t midi)               noexcept;
@@ -149,6 +184,9 @@ private:
     // DSP chain (limiter + BBE — populated when dsp/ files are present)
     DspChain dsp_chain_;
 
+    // Synthesis rendering config (forwarded to each voice at noteOn)
+    SynthConfig synth_cfg_;
+
     // Limiter state cache (for getters, since DspChain stubs don't store values yet)
     uint8_t limiter_threshold_midi_ = 127;
     uint8_t limiter_release_midi_   = 64;
@@ -161,4 +199,8 @@ private:
     // Temp buffers for processBlockInterleaved (allocated in prepareToPlay)
     std::vector<float> tmp_l_;
     std::vector<float> tmp_r_;
+
+    // Peak metering (written by audio thread, read by GUI)
+    std::atomic<float> output_peak_lin_{0.f};
+    float              peak_decay_coeff_ = 0.9878f;  // recomputed in prepareToPlay
 };
