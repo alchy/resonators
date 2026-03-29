@@ -3,6 +3,23 @@ gui/routers/generate.py
 ────────────────────────
 Generation endpoints: trigger synthesis for a range of notes/velocities.
 Jobs run in a background thread; status polled via GET .../generate/status.
+
+Synthesis chain (all in-process, no subprocess):
+  analysis.physics_synth.synthesize_note()
+    ← resolve_note_params(cfg, midi)   (global + per-note deltas)
+    ← velocity RMS profile             (from cfg or gamma fallback)
+    ← spectral color blend             (vel_color_blend / vel_color_ref)
+    ← tau1 k=1 scale                   (per-note override)
+  → gui/sessions/{name}/generated/m{midi:03d}-vel{v}-f{sr_code}.wav
+  → gui/sessions/{name}/generated/instrument-definition.json
+
+Equivalent CLI: python -u analysis/generate-samples.py --params ... --session ...
+
+Endpoints:
+  POST /api/sessions/{name}/generate          start generation job
+  GET  /api/sessions/{name}/generate/status   poll progress
+  POST /api/sessions/{name}/generate/cancel   cancel running job
+  GET  /api/sessions/{name}/files             list generated WAV files
 """
 
 import copy
@@ -65,14 +82,19 @@ def _apply_color_blend(sample: dict, ref_sample: dict, blend: float) -> dict:
     return sample
 
 
-def _load_params(cfg: dict, name: str) -> dict:
-    p = Path(cfg.get("source_params", ""))
+def _load_params(cfg: dict, name: str, params_file: str = "") -> dict:
+    """Load params JSON. params_file overrides session source_params if given."""
+    if params_file:
+        p = Path(params_file)
+    else:
+        p = Path(cfg.get("source_params", ""))
     if not p.exists():
         p = session_dir(name) / "params.json"
     return json.loads(p.read_text())
 
 
-def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cfg: dict):
+def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cfg: dict,
+             params_file: str = ""):
     from analysis.physics_synth import synthesize_note
 
     job = _jobs[session_name]
@@ -82,7 +104,7 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
     job["errors"] = []
     log.info(f"[{session_name}] Job started: {len(midi_range)} notes × {len(vel_layers)} vel = {job['total']} samples")
 
-    params_data = _load_params(cfg, session_name)
+    params_data = _load_params(cfg, session_name, params_file)
     out_dir = session_dir(session_name) / "generated"
     out_dir.mkdir(exist_ok=True)
 
@@ -174,9 +196,10 @@ def _run_job(session_name: str, midi_range: list[int], vel_layers: list[int], cf
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 class GenerateRequest(BaseModel):
-    midi_from: int = 21
-    midi_to: int = 108
-    vel_layers: list[int] = [3]
+    midi_from:   int = 21
+    midi_to:     int = 108
+    vel_layers:  list[int] = [3]
+    params_file: str = ""   # override session source_params; "" = use session default
 
 
 @router.post("/{name}/generate")
@@ -187,6 +210,9 @@ def start_generate(name: str, body: GenerateRequest):
 
     midi_range = list(range(body.midi_from, body.midi_to + 1))
     vel_layers = [v for v in body.vel_layers if 0 <= v <= 7]
+
+    # Resolve effective params path for display in status
+    effective_params = body.params_file or cfg.get("source_params", "")
 
     _jobs[name] = {
         "status": "starting",
@@ -200,11 +226,12 @@ def start_generate(name: str, body: GenerateRequest):
         "midi_from": body.midi_from,
         "midi_to": body.midi_to,
         "vel_layers": vel_layers,
+        "params_file": effective_params,
     }
 
     t = threading.Thread(
         target=_run_job,
-        args=(name, midi_range, vel_layers, cfg),
+        args=(name, midi_range, vel_layers, cfg, body.params_file),
         daemon=True,
     )
     t.start()

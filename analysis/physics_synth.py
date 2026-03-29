@@ -22,12 +22,14 @@ Physical model:
     0.0 = bypass (default, hardware may have real soundboard)
     1.0 = full virtual soundboard (when functional)
 
-Usage:
-    python analysis/physics_synth.py --params analysis/params.json
-                                     --midi 60 --vel 3 --duration 6
-                                     [--soundboard 0.0]
-                                     [--beat-scale 1.5]
-                                     [--compare]
+Usage (via CLI wrapper):
+    python analysis/physics-synth.py --params analysis/params-ks-grand.json \
+                                     --midi 60 --vel 3 --duration 6 \
+                                     [--soundboard 0.0] [--beat-scale 1.5] \
+                                     [--compare] [--preview]
+
+Note: import as module via  from analysis.physics_synth import synthesize_note
+      CLI entry point: analysis/physics-synth.py
 """
 
 import argparse

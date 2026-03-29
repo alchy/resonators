@@ -2,12 +2,14 @@
 gui/logger.py
 ─────────────
 Centralized logging for the GUI backend.
-Logs to gui/logs/server.log (rotating, max 5 MB × 3 files) and to stdout.
+Logs to gui/logs/server.log (plain append) and to stdout.
+RotatingFileHandler is intentionally avoided: on Windows the reloader
+subprocess and the worker process both hold the file open, making os.rename
+(required by rotation) fail with WinError 32.
 """
 
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOG_DIR = Path("gui/logs")
@@ -25,13 +27,8 @@ def get_logger(name: str) -> logging.Logger:
         return logger  # already configured
     logger.setLevel(logging.DEBUG)
 
-    # File handler — rotating
-    fh = RotatingFileHandler(
-        LOG_DIR / "server.log",
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8",
-    )
+    # Plain file handler — no rotation (avoids WinError 32 on Windows)
+    fh = logging.FileHandler(LOG_DIR / "server.log", encoding="utf-8")
     fh.setFormatter(_fmt)
     fh.setLevel(logging.DEBUG)
     logger.addHandler(fh)

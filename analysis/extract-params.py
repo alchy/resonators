@@ -1,29 +1,60 @@
 """
-analysis/extract_params.py
+analysis/extract-params.py
 ──────────────────────────
-Phase 0: Analytical extraction of physical parameters from KS Grand sample bank.
+Phase 0: Analytical extraction of physical parameters from a WAV sample bank.
 
-Extracts per-file:
+Extracts per-note/velocity:
   - Inharmonicity coefficient B  (f_k = k·f0·√(1+B·k²))
-  - Per-partial decay rates τ1_k, τ2_k (bi-exponential fit)
+  - Per-partial bi-exponential decay τ1_k, τ2_k
   - Per-partial beating frequency Δf_k and depth m_k
   - Noise model: attack burst τ, sustained floor RMS, spectral centroid
+  - Initial amplitude A0 per partial
 
-Output: analysis/params.json  (loadable by synthesizer)
+Output:  analysis/params-{bank}.json   (e.g. params-ks-grand.json)
+Log:     runtime-logs/extract-params-log.txt  (auto-created, tee of stdout)
 
 Usage:
-    python analysis/extract_params.py --bank C:/SoundBanks/IthacaPlayer/ks-grand
-                                      [--out analysis/params.json]
-                                      [--plot] [--midi 60] [--vel 3]
+    python -u analysis/extract-params.py \\
+        --bank    C:/SoundBanks/IthacaPlayer/ks-grand \\
+        --out     analysis/params-ks-grand.json \\
+        --workers 4 \\
+        [--verbose] [--plot] [--midi 60] [--vel 3]
+
+Arguments:
+  --bank      WAV sample bank directory
+  --out       Output JSON path (default: analysis/params.json)
+  --workers   Parallel worker processes (default: cpu_count)
+  --verbose   Detailed per-file output
+  --plot      Show diagnostic plots for individual notes
+  --midi      Process only this MIDI note (debug)
+  --vel       Process only this velocity layer (debug)
 """
 
 import argparse
 import json
 import math
 import os
+import sys
 import warnings
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
+
+
+# ── Runtime logging (tee stdout → runtime-logs/extract-params-log.txt) ───────
+
+def _setup_log() -> None:
+    log_dir = Path("runtime-logs")
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / "extract-params-log.txt"
+
+    class _Tee:
+        def __init__(self, *streams): self.streams = streams
+        def write(self, s):
+            for st in self.streams: st.write(s)
+        def flush(self):
+            for st in self.streams: st.flush()
+
+    sys.stdout = _Tee(sys.__stdout__, open(log_path, "w", encoding="utf-8", buffering=1))
 
 import numpy as np
 import soundfile as sf
@@ -608,27 +639,31 @@ def analyze_bank(bank_dir: str, out_path: str,
 
     results = {}
     errors = []
+    total = len(work)
+    done = 0
 
     if n_workers == 1 or len(work) == 1:
         # Single-process (easier debugging)
         for path, midi, vel in work:
             key, data, err = _analyze_file_worker((path, midi, vel))
+            done += 1
             name = Path(path).name
             if err:
-                print(f"  {name} ... ERROR: {err}")
+                print(f"  {done}/{total}: {name} ... ERROR: {err}")
                 errors.append((name, err))
             else:
                 results[key] = data
-                print(f"  {name} ... B={data['B']:.5f}  partials={data['n_partials']}  dur={data['duration_s']:.1f}s")
+                print(f"  {done}/{total}: {name} ... B={data['B']:.5f}  partials={data['n_partials']}  dur={data['duration_s']:.1f}s")
     else:
         with Pool(n_workers) as pool:
             for key, data, err in pool.imap_unordered(_analyze_file_worker, work):
+                done += 1
                 if err:
-                    print(f"  {key} ... ERROR: {err}")
+                    print(f"  {done}/{total}: {key} ... ERROR: {err}")
                     errors.append((key, err))
                 else:
                     results[key] = data
-                    print(f"  {key} ... B={data['B']:.5f}  p={data['n_partials']}  dur={data['duration_s']:.1f}s")
+                    print(f"  {done}/{total}: {key} ... B={data['B']:.5f}  p={data['n_partials']}  dur={data['duration_s']:.1f}s")
 
     summary = _compute_summary(results)
 
@@ -805,6 +840,7 @@ def plot_keyboard_B(params_path: str):
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
+    _setup_log()
     parser = argparse.ArgumentParser()
     parser.add_argument('--bank', default='C:/SoundBanks/IthacaPlayer/ks-grand')
     parser.add_argument('--out', default='analysis/params.json')

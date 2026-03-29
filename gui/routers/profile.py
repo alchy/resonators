@@ -27,7 +27,7 @@ _job: dict = {"status": "idle"}
 
 class TrainRequest(BaseModel):
     wav_dir:        str   = "C:/SoundBanks/IthacaPlayer/ks-grand"
-    out:            str   = "analysis/params_profile.json"
+    out:            str   = "analysis/params-nn-profile.json"
     model_out:      str   = "analysis/profile_ddsp.pt"
     init:           str   = ""       # optional warm-start path
     epochs:         int   = 300
@@ -142,20 +142,24 @@ def _run_train(req: TrainRequest):
 
 @router.get("/profile/list")
 def list_profiles():
-    """Return available params JSON files: params.json + params_profile*.json."""
+    """Return available params JSON files in analysis/:
+    - params.json and params-{bank}.json  (raw extracted)
+    - params-nn-profile*.json             (trained profiles)
+    - params_smoothed.json                (legacy)
+    """
     analysis_dir = Path("analysis")
-    files = []
-    # Raw extracted params
-    p = analysis_dir / "params.json"
-    if p.exists():
-        files.append(str(p).replace("\\", "/"))
-    # Trained/smoothed profiles only
-    for p in sorted(analysis_dir.glob("params_profile*.json")):
-        files.append(str(p).replace("\\", "/"))
-    p = analysis_dir / "params_smoothed.json"
-    if p.exists():
-        files.append(str(p).replace("\\", "/"))
-    return {"profiles": files}
+    raw, trained = [], []
+    for p in sorted(analysis_dir.glob("params*.json")):
+        name = p.name
+        if name.startswith("params-nn-profile"):
+            trained.append(str(p).replace("\\", "/"))
+        elif name.startswith("params") and not name.startswith("params_smoothed"):
+            raw.append(str(p).replace("\\", "/"))
+    # Legacy smoothed
+    p_sm = analysis_dir / "params_smoothed.json"
+    if p_sm.exists():
+        raw.append(str(p_sm).replace("\\", "/"))
+    return {"profiles": raw + trained}
 
 
 @router.get("/profile/models")

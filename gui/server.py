@@ -2,7 +2,25 @@
 gui/server.py
 ─────────────
 FastAPI backend for the Resonator Synthesizer GUI.
-Run: python gui/server.py   (or: uvicorn gui.server:app --reload --port 8989)
+
+Run:
+    python gui/server.py
+    uvicorn gui.server:app --reload --port 8989
+
+Routers mounted:
+  /api/sessions/*   sessions.py  — session CRUD, config, per-note overrides
+  /api/sessions/*   generate.py  — batch synthesis jobs
+  /api/sessions/*   audio.py     — audio file serving / spectrum analysis
+  /api/             profile.py   — param profile listing, EGRB model status
+  /api/             pipeline.py  — analysis pipeline (extract/eq/train), SSE logs
+  /audio/*          static       — generated WAV files (gui/sessions/*/generated/)
+  /                 static       — frontend (gui/static/)
+
+Logging:
+  gui/logs/server.log  — FastAPI + uvicorn internal logs (plain FileHandler,
+                          RotatingFileHandler avoided: WinError 32 on Windows
+                          when reloader + worker both hold the file open)
+  runtime-logs/*.txt   — stdout tee from analysis subprocesses (auto-created)
 """
 
 import logging
@@ -18,13 +36,13 @@ from gui.logger import get_logger
 
 log = get_logger("gui.server")
 
-# Redirect uvicorn logs into same rotating file
+# Redirect uvicorn logs into same file (plain FileHandler — RotatingFileHandler
+# causes WinError 32 on Windows because the reloader + worker both hold the file open)
+_log_fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s", "%Y-%m-%d %H:%M:%S")
 for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     _uv = logging.getLogger(_name)
-    from logging.handlers import RotatingFileHandler
-    from pathlib import Path as _P
-    _fh = RotatingFileHandler(_P("gui/logs/server.log"), maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
-    _fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s", "%Y-%m-%d %H:%M:%S"))
+    _fh = logging.FileHandler(Path("gui/logs/server.log"), encoding="utf-8")
+    _fh.setFormatter(_log_fmt)
     _uv.addHandler(_fh)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

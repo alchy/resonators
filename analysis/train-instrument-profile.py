@@ -1,11 +1,11 @@
 """
-analysis/train_instrument_profile.py
+analysis/train-instrument-profile.py
 ──────────────────────────────────────
-Learn a smooth instrument profile from raw extracted parameters.
+Phase 3 (pipeline step 3): learn a smooth instrument profile from raw extracted params.
 
 A small factorised neural network learns the piano's physical parameter
 landscape from all available (midi, vel) samples — handling noisy extractions,
-missing notes, and inter-velocity inconsistencies in one step.
+missing notes, and inter-velocity inconsistencies.
 
 Architecture (physically motivated factorisation):
   B_net    : MLP(midi)           → B          (inharmonicity, vel-independent)
@@ -16,31 +16,63 @@ Architecture (physically motivated factorisation):
   eq_net   : MLP(midi, freq)     → gain_db     (body EQ, vel-independent)
 
 All positive outputs trained in log-space (MSE on log values → geometric error).
-Width factor trained in log-space separately.
 
-Output: profile.pt  (model weights + metadata)
-        params_profile.json  (full 88×8 params, compatible with GUI/synthesiser)
+Output files:
+  --out   analysis/params-nn-profile-{bank}.json   full 88×8 params for GUI/synthesiser
+  --model analysis/profile.pt                      model weights + metadata (reusable)
+
+Log:  runtime-logs/train-profile-log.txt  (auto-created, tee of stdout)
 
 Usage:
-  python analysis/train_instrument_profile.py
-         --in  analysis/params.json       # raw extraction (may be sparse/noisy)
-         --out analysis/params_profile.json
-         --model analysis/profile.pt
-         [--epochs 800]
-         [--midi-from 21 --midi-to 108]
-         [--plot]
+    python -u analysis/train-instrument-profile.py \\
+        --in    analysis/params-ks-grand.json \\
+        --out   analysis/params-nn-profile-ks-grand.json \\
+        --model analysis/profile.pt \\
+        --epochs 800 --hidden 64 --lr 0.003 \\
+        [--midi-from 21] [--midi-to 108] [--sr 44100] \\
+        [--no-preserve-orig] [--plot]
+
+Arguments:
+  --in              Input extracted params JSON
+  --out             Output smoothed params JSON (for GUI / generate-samples.py)
+  --model           Output PyTorch model weights (default: analysis/profile.pt)
+  --epochs          Training epochs (default: 800)
+  --hidden          MLP hidden size (default: 64)
+  --lr              Learning rate (default: 0.003)
+  --midi-from/to    MIDI range for profile output (default: 21–108)
+  --sr              Sample rate written into output JSON (default: 44100)
+  --no-preserve-orig  Overwrite extracted values with NN predictions (default: keep)
+  --plot            Show training loss + parameter curves
 """
 
 import argparse
 import json
 import math
 import copy
+import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+
+# ── Runtime logging (tee stdout → runtime-logs/train-profile-log.txt) ────────
+
+def _setup_log() -> None:
+    log_dir = Path("runtime-logs")
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / "train-profile-log.txt"
+
+    class _Tee:
+        def __init__(self, *streams): self.streams = streams
+        def write(self, s):
+            for st in self.streams: st.write(s)
+        def flush(self):
+            for st in self.streams: st.flush()
+
+    sys.stdout = _Tee(sys.__stdout__, open(log_path, "w", encoding="utf-8", buffering=1))
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -591,9 +623,10 @@ def generate_profile(
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
+    _setup_log()
     ap = argparse.ArgumentParser()
     ap.add_argument("--in",     dest="inp",    default="analysis/params.json")
-    ap.add_argument("--out",    dest="out",    default="analysis/params_profile.json")
+    ap.add_argument("--out",    dest="out",    default="analysis/params-nn-profile.json")
     ap.add_argument("--model",  dest="model",  default="analysis/profile.pt")
     ap.add_argument("--epochs", type=int,      default=800)
     ap.add_argument("--hidden", type=int,      default=64)

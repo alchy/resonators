@@ -1,11 +1,30 @@
 """
 gui/routers/sessions.py
 ────────────────────────
-Session CRUD endpoints.
+Session CRUD: create, list, delete, read/write config, per-note overrides.
+
+Session layout:
+  gui/sessions/{name}/
+    config.json      render/timbre/stereo/per_note/velocity_rms_profile
+    params.json      copy of source_params made at session creation
+    generated/
+      m{midi:03d}-vel{v}-f{sr_code}.wav   synthesized samples
+      instrument-definition.json          metadata for player
+
+Endpoints:
+  GET    /api/sessions                     list sessions
+  POST   /api/sessions                     create session
+  DELETE /api/sessions/{name}              delete session + generated files
+  GET    /api/sessions/{name}/config       get config + param metadata
+  PUT    /api/sessions/{name}/config       update render/timbre/stereo/vel_profile
+  GET    /api/sessions/{name}/note/{midi}  get per-note overrides + resolved params
+  PUT    /api/sessions/{name}/note/{midi}  set per-note overrides
+  DELETE /api/sessions/{name}/note/{midi}  clear per-note overrides
+  GET    /api/sessions/{name}/params       list all notes in session params.json
 """
 
 import json
-import shutil
+import shutil  # used by delete_session
 from pathlib import Path
 from typing import Optional
 
@@ -58,9 +77,7 @@ def list_sessions():
 
 
 class CreateSession(BaseModel):
-    name: str
-    source_params: str = "analysis/params.json"
-    instrument_meta: dict = {}
+    name: str   # bank name, e.g. "ks-grand"
 
 
 @router.post("")
@@ -73,21 +90,19 @@ def create_session(body: CreateSession):
     d.mkdir(parents=True)
     (d / "generated").mkdir()
 
-    # Copy source params into session
-    src = Path(body.source_params)
-    if not src.exists():
-        raise HTTPException(400, f"source_params not found: {src}")
-    shutil.copy(src, d / "params.json")
+    # source_params points directly at the trained profile; may not exist yet
+    # (pipeline has not been run yet) — will be updated by apply_pipeline
+    source_params = f"analysis/params-nn-profile-{name}.json"
 
-    cfg = default_config(str(d / "params.json"))
+    cfg = default_config(source_params)
     cfg["instrument_meta"] = {
-        "instrumentName": body.instrument_meta.get("instrumentName", name),
-        "author":         body.instrument_meta.get("author", "Unknown"),
-        "category":       body.instrument_meta.get("category", "Piano"),
-        "instrumentVersion": body.instrument_meta.get("instrumentVersion", "1"),
-        "description":    body.instrument_meta.get("description", "N/A"),
-        "velocityMaps":   "8",
-        "sampleCount":    0,
+        "instrumentName":    name,
+        "author":            "n/a",
+        "category":          "Piano",
+        "instrumentVersion": "1",
+        "description":       "n/a",
+        "velocityMaps":      "8",
+        "sampleCount":       0,
     }
     save_config(name, cfg)
     return {"name": name, "created": True}

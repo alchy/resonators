@@ -1,18 +1,27 @@
 """
-analysis/compute_spectral_eq.py
+analysis/compute-spectral-eq.py
 ───────────────────────────────
-Compute per-note spectral EQ correction H(f) = LTASE_orig / LTASE_synth and
-store it in params.json as `spectral_eq: {freqs_hz, gains_db}`.
+Phase 2 (pipeline step 2): compute per-note LTASE spectral EQ correction.
 
-This acts as a "resonant cavity" / soundboard shaping layer: it captures the
-spectral envelope difference between the original sample and the physics
-synthesizer, encoding the instrument body's frequency response.
+Method (LTASE — Long-Term Average Spectrum Envelope):
+  H(f) = LTASE_orig(f) / LTASE_synth(f)
+  Stored as spectral_eq: {freqs_hz, gains_db} in each sample entry of params JSON.
+  Captures instrument body resonance: encodes frequency response difference
+  between original recording and physics synthesizer output.
+
+Modifies params JSON in-place (adds/replaces spectral_eq field per note).
+Log:  runtime-logs/spectral-eq-log.txt  (auto-created, tee of stdout)
 
 Usage:
-    python analysis/compute_spectral_eq.py \
-        --params analysis/params.json \
-        --bank C:/SoundBanks/IthacaPlayer/ks-grand \
+    python -u analysis/compute-spectral-eq.py \\
+        --params  analysis/params-ks-grand.json \\
+        --bank    C:/SoundBanks/IthacaPlayer/ks-grand \\
         --workers 4
+
+Arguments:
+  --params   Params JSON to update in-place (output of extract-params.py)
+  --bank     WAV sample bank directory (same as used in extract step)
+  --workers  Parallel worker processes (default: 4)
 """
 
 import argparse
@@ -22,6 +31,23 @@ import sys
 import traceback
 from multiprocessing import Pool
 from pathlib import Path
+
+
+# ── Runtime logging (tee stdout → runtime-logs/spectral-eq-log.txt) ──────────
+
+def _setup_log() -> None:
+    log_dir = Path("runtime-logs")
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / "spectral-eq-log.txt"
+
+    class _Tee:
+        def __init__(self, *streams): self.streams = streams
+        def write(self, s):
+            for st in self.streams: st.write(s)
+        def flush(self):
+            for st in self.streams: st.flush()
+
+    sys.stdout = _Tee(sys.__stdout__, open(log_path, "w", encoding="utf-8", buffering=1))
 
 import numpy as np
 import soundfile as sf
@@ -88,8 +114,7 @@ def process_sample(key: str):
         wav_name = f'm{midi:03d}-vel{vel}-f44.wav'
         wav_path = Path(_G_BANK_DIR) / wav_name
         if not wav_path.exists():
-            print(f"  SKIP {key}: WAV not found at {wav_path}")
-            return key, None
+            return key, {'_log': f"SKIP: WAV not found at {wav_path}", '_skip': True}
 
         orig_stereo, sr_orig = sf.read(str(wav_path), dtype='float32', always_2d=True)
         # Convert to mono
@@ -159,17 +184,17 @@ def process_sample(key: str):
 
         max_gain  = eq_gains.max()
         range_db  = eq_gains.max() - eq_gains.min()
-        print(f"  {key} ... N_FFT={n_fft}  EQ peak={max_gain:.1f}dB range={range_db:.1f}dB  width_factor={width_factor:.3f}")
+        log_msg   = f"N_FFT={n_fft}  EQ peak={max_gain:.1f}dB range={range_db:.1f}dB  width={width_factor:.3f}"
 
         return key, {
             'freqs_hz': eq_freqs.tolist(),
             'gains_db': eq_gains.tolist(),
             'stereo_width_factor': width_factor,
+            '_log': log_msg,
         }
 
     except Exception:
-        print(f"  ERROR {key}:\n{traceback.format_exc()}")
-        return key, None
+        return key, {'_log': traceback.format_exc(), '_error': True}
 
 
 # ── STFT helpers ──────────────────────────────────────────────────────────────
@@ -214,6 +239,7 @@ def _smooth_octave(H: np.ndarray, freqs: np.ndarray, half_width_oct: float) -> n
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    _setup_log()
     parser = argparse.ArgumentParser(
         description='Compute per-note spectral EQ and store in params.json'
     )
@@ -236,6 +262,8 @@ def main():
     print(f"Processing {len(keys)} samples with {args.workers} workers ...")
 
     results: dict = {}
+    total = len(keys)
+    done = 0
 
     with Pool(
         processes=args.workers,
@@ -243,8 +271,17 @@ def main():
         initargs=(data, bank_dir),
     ) as pool:
         for key, eq in pool.imap_unordered(process_sample, keys):
-            if eq is not None:
+            done += 1
+            log_msg = eq.pop('_log', '') if eq else ''
+            is_skip = eq.pop('_skip', False) if eq else False
+            is_err  = eq.pop('_error', False) if eq else False
+            if is_err:
+                print(f"  {done}/{total}: {key} ... ERROR:\n{log_msg}")
+            elif is_skip or eq is None:
+                print(f"  {done}/{total}: {key} ... {log_msg}")
+            else:
                 results[key] = eq
+                print(f"  {done}/{total}: {key} ... {log_msg}")
 
     # Write back to params.json
     n_ok = 0

@@ -4,11 +4,27 @@ gui/routers/pipeline.py
 Full analysis pipeline: extract params → spectral EQ → train profile.
 Each step runs as a subprocess for isolation and real-time stdout streaming.
 
-POST /api/pipeline/run    — start pipeline (all steps or from a specific step)
-GET  /api/pipeline/status — poll step progress
-POST /api/pipeline/cancel — interrupt current step + subprocess
+Output paths derived from WAV bank directory name (bank suffix):
+  wav_dir  C:/SoundBanks/IthacaPlayer/ks-grand
+  params_out  →  analysis/params-ks-grand.json
+  out         →  analysis/params-nn-profile-ks-grand.json
+
+Endpoints:
+  POST /api/pipeline/run          start pipeline (all steps or from a specific step)
+  GET  /api/pipeline/status       poll step progress + log tail
+  POST /api/pipeline/cancel       interrupt current step + subprocess
+  GET  /api/pipeline/log/{step}   last N lines from runtime-logs/{step}-log.txt
+  GET  /api/pipeline/log-stream/{step}  SSE tail of log file (EventSource)
+  GET  /api/pipeline/egrb_status  EGRB training state from checkpoints/train.log
+  GET  /api/pipeline/vel_profile  velocity RMS ratios derived from A0 energies
+  POST /api/pipeline/apply/{session}  copy trained profile into session
+
+Logging:
+  Analysis scripts tee stdout to runtime-logs/{step}-log.txt (created on first run).
+  GUI backend internal logs go to gui/logs/server.log via gui.logger.
 """
 
+import asyncio
 import re
 import subprocess
 import sys
@@ -16,7 +32,8 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from gui.logger import get_logger
@@ -32,12 +49,15 @@ _job: dict = {"status": "idle"}
 
 
 class PipelineRequest(BaseModel):
-    wav_dir:   str  = "C:/SoundBanks/IthacaPlayer/ks-grand"
-    out:       str  = "analysis/params_profile.json"
-    epochs:    int  = 300
-    kmax:      int  = 16
-    workers:   int  = 4
-    from_step: str  = "extract"   # "extract" | "eq" | "train"
+    wav_dir:      str   = "C:/SoundBanks/IthacaPlayer/ks-grand"
+    out:          str   = "analysis/params-nn-profile.json"
+    params_out:   str   = "analysis/params.json"
+    epochs:       int   = 800
+    lr:           float = 0.003
+    hidden:       int   = 64
+    workers:      int   = 4
+    no_preserve:  bool  = False
+    from_step:    str   = "extract"   # "extract" | "eq" | "train"
 
 
 def _make_fresh_job() -> dict:
@@ -128,6 +148,7 @@ def _run_pipeline(req: PipelineRequest) -> None:
     job = _job
     job["started_at"] = time.time()
     job["status"] = "running"
+    job["params_out"] = req.params_out
 
     from_idx = STEP_NAMES.index(req.from_step) if req.from_step in STEP_NAMES else 0
 
@@ -145,20 +166,24 @@ def _run_pipeline(req: PipelineRequest) -> None:
         step_state = job["steps"][step]
 
         if step == "extract":
-            cmd = [PYTHON, "-u", "analysis/extract_params.py",
+            cmd = [PYTHON, "-u", "analysis/extract-params.py",
                    "--bank", req.wav_dir,
-                   "--out", "analysis/params.json",
+                   "--out", req.params_out,
                    "--workers", str(req.workers)]
         elif step == "eq":
-            cmd = [PYTHON, "-u", "analysis/compute_spectral_eq.py",
-                   "--params", "analysis/params.json",
+            cmd = [PYTHON, "-u", "analysis/compute-spectral-eq.py",
+                   "--params", req.params_out,
                    "--bank", req.wav_dir,
                    "--workers", str(req.workers)]
         else:  # train
-            cmd = [PYTHON, "-u", "analysis/train_instrument_profile.py",
-                   "--in", "analysis/params.json",
+            cmd = [PYTHON, "-u", "analysis/train-instrument-profile.py",
+                   "--in", req.params_out,
                    "--out", req.out,
-                   "--epochs", str(req.epochs)]
+                   "--epochs", str(req.epochs),
+                   "--lr", str(req.lr),
+                   "--hidden", str(req.hidden)]
+            if req.no_preserve:
+                cmd.append("--no-preserve-orig")
 
         log.info(f"Pipeline [{step}]: {' '.join(cmd)}")
         _stream_subprocess(cmd, step_state, job)
@@ -173,7 +198,7 @@ def _run_pipeline(req: PipelineRequest) -> None:
     job["step"] = None
     job["finished_at"] = time.time()
         # Auto-compute velocity RMS profile from extracted A0 energies
-    params_path = Path("analysis/params.json")
+    params_path = Path(req.params_out)
     if params_path.exists():
         vel_profile = _compute_vel_profile(params_path)
         job["vel_profile"] = vel_profile
@@ -262,7 +287,7 @@ def start_pipeline(body: PipelineRequest):
 
 @router.get("/pipeline/status")
 def get_pipeline_status():
-    j = dict(_job)
+    j = {k: v for k, v in _job.items() if not k.startswith("_")}  # exclude _proc etc.
     j["steps"] = {k: dict(v) for k, v in _job.get("steps", {}).items()}
     return j
 
@@ -281,6 +306,112 @@ def cancel_pipeline():
     return {"cancelling": True}
 
 
+@router.get("/pipeline/egrb_status")
+def get_egrb_status():
+    """Read last line of checkpoints/train.log and return current EGRB training state."""
+    import os
+    log_path = Path("checkpoints/train.log")
+    if not log_path.exists():
+        return {"status": "idle", "epoch": 0, "total": 0, "phase": None, "loss": None, "active": False}
+
+    # Determine if training is active (log modified in last 120s)
+    age_s = time.time() - log_path.stat().st_mtime
+    active = age_s < 120
+
+    # Parse last non-empty line
+    last_line = ""
+    with open(log_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                last_line = line.strip()
+
+    if not last_line:
+        return {"status": "idle", "epoch": 0, "total": 0, "phase": None, "loss": None, "active": False}
+
+    m_ep = re.search(r'Epoch\s+(\d+)\s*/\s*(\d+)', last_line)
+    m_ph = re.search(r'\[(phase\d)\]', last_line)
+    m_lo = re.search(r'total=([\d.]+)', last_line)
+
+    epoch = int(m_ep.group(1)) if m_ep else 0
+    total = int(m_ep.group(2)) if m_ep else 0
+    phase = m_ph.group(1) if m_ph else None
+    loss  = float(m_lo.group(1)) if m_lo else None
+
+    return {
+        "status": "running" if active else "stopped",
+        "epoch":  epoch,
+        "total":  total,
+        "phase":  phase,
+        "loss":   loss,
+        "active": active,
+        "age_s":  int(age_s),
+    }
+
+
+_LOG_PATHS = {
+    "extract": "runtime-logs/extract-params-log.txt",
+    "eq":      "runtime-logs/spectral-eq-log.txt",
+    "train":   "runtime-logs/train-profile-log.txt",
+}
+
+
+@router.get("/pipeline/log/{step}")
+def get_step_log(step: str, lines: int = 40):
+    """Return last N lines from the runtime log for a pipeline step."""
+    log_path = Path(_LOG_PATHS.get(step, ""))
+    if not log_path.exists():
+        return {"lines": [], "exists": False, "path": str(log_path)}
+    content = log_path.read_text(encoding="utf-8", errors="replace")
+    all_lines = content.splitlines()
+    return {"lines": all_lines[-lines:], "exists": True, "path": str(log_path)}
+
+
+@router.get("/pipeline/log-stream/{step}")
+async def stream_step_log(step: str, request: Request):
+    """SSE: tail log file and push new lines as they appear (JSON-encoded arrays)."""
+    import json as _json
+    log_path = Path(_LOG_PATHS.get(step, ""))
+
+    async def event_gen():
+        sent_bytes = 0
+        # Send existing content first (last 80 lines), replace=True flag
+        if log_path.exists():
+            content = log_path.read_text(encoding="utf-8", errors="replace")
+            tail = content.splitlines()[-80:]
+            if tail:
+                payload = _json.dumps({"replace": True, "lines": tail})
+                yield f"data: {payload}\n\n"
+            sent_bytes = log_path.stat().st_size
+
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                if log_path.exists():
+                    size = log_path.stat().st_size
+                    if size > sent_bytes:
+                        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(sent_bytes)
+                            new_text = f.read()
+                        sent_bytes = size
+                        new_lines = [l for l in new_text.splitlines() if l.strip()]
+                        if new_lines:
+                            payload = _json.dumps({"replace": False, "lines": new_lines})
+                            yield f"data: {payload}\n\n"
+                    elif size < sent_bytes:
+                        # File truncated (new run) — resend from beginning next tick
+                        sent_bytes = 0
+            except Exception:
+                pass
+            await asyncio.sleep(0.4)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/pipeline/vel_profile")
 def get_vel_profile():
     """Compute velocity RMS profile from current analysis/params.json."""
@@ -294,36 +425,70 @@ def get_vel_profile():
 def apply_pipeline_to_session(session_name: str):
     """
     Apply completed pipeline output to a session:
-    - Copy trained profile as session params
+    - Point source_params directly at the trained profile (no copy)
     - Write computed velocity profile into session config
     """
-    import shutil
     from gui.routers.sessions import session_dir, load_config, save_config
 
     sdir = session_dir(session_name)
     if not sdir.exists():
         raise HTTPException(404, f"Session '{session_name}' not found")
 
-    out_path = _job.get("out") or "analysis/params_profile.json"
+    out_path = _job.get("out") or "analysis/params-nn-profile.json"
     src = Path(out_path)
     if not src.exists():
-        # Fallback: apply velocity profile only from params.json
-        if not Path("analysis/params.json").exists():
+        # Fallback: point at raw extracted params if no trained profile yet
+        params_out = _job.get("params_out", "analysis/params.json")
+        src = Path(params_out)
+        if not src.exists():
             raise HTTPException(400, "No trained profile and no params.json found")
-        src = Path("analysis/params.json")
 
-    dest = sdir / "params.json"
-    shutil.copy2(src, dest)
+    # Use forward slashes so the path is consistent on all platforms
+    source_params = str(src).replace("\\", "/")
 
     cfg = load_config(session_name)
-    cfg["source_params"] = str(dest)
+    cfg["source_params"] = source_params
 
     # Apply velocity profile from A0 energies
-    params_src = Path("analysis/params.json")
+    params_src = Path(_job.get("params_out", "analysis/params.json"))
     if params_src.exists():
         cfg["velocity_rms_profile"] = _compute_vel_profile(params_src)
 
     save_config(session_name, cfg)
-    log.info(f"Applied pipeline to session '{session_name}' -> {dest}")
-    return {"applied": True, "source_params": str(dest),
+    log.info(f"Applied pipeline to session '{session_name}': source_params → {source_params}")
+    return {"applied": True, "source_params": source_params,
             "vel_profile": cfg["velocity_rms_profile"]}
+
+
+@router.post("/pipeline/snapshot/{session_name}")
+def snapshot_session(session_name: str):
+    """
+    Save a timestamped snapshot of the current NN profile + session config.
+    Writes to snapshots/{session_name}-{YYYYMMDD-HHMM}/
+      params-nn-profile.json   copy of source_params
+      config.json              copy of session config
+    """
+    import shutil
+    from datetime import datetime
+    from gui.routers.sessions import session_dir, load_config
+
+    cfg = load_config(session_name)
+    source = Path(cfg.get("source_params", ""))
+
+    snap_dir = Path("snapshots") / f"{session_name}-{datetime.now().strftime('%Y%m%d-%H%M')}"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = {}
+    if source.exists():
+        dest_params = snap_dir / source.name
+        shutil.copy2(source, dest_params)
+        saved["params"] = str(dest_params).replace("\\", "/")
+
+    cfg_src = session_dir(session_name) / "config.json"
+    if cfg_src.exists():
+        dest_cfg = snap_dir / "config.json"
+        shutil.copy2(cfg_src, dest_cfg)
+        saved["config"] = str(dest_cfg).replace("\\", "/")
+
+    log.info(f"Snapshot saved: {snap_dir}")
+    return {"snapshot_dir": str(snap_dir).replace("\\", "/"), "saved": saved}

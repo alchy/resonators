@@ -1,9 +1,12 @@
-// ── Knob drag interaction (adapted from Moog/Behringer Model D patch saver) ───
+// ══════════════════════════════════════════════════════════════════════════════
+// Knob drag (Moog rotary — mousedown/move/up on document)
+// ══════════════════════════════════════════════════════════════════════════════
 (function () {
   let drag = { active: false, dial: null, startY: 0, startRot: 0 };
 
   function valToRot(input) {
-    const min = parseFloat(input.min), max = parseFloat(input.max);
+    const min = parseFloat(input.min);
+    const max = parseFloat(input.max);
     const pct = (parseFloat(input.value) - min) / (max - min);
     return -150 + pct * 300;
   }
@@ -18,8 +21,8 @@
   document.addEventListener('mousedown', e => {
     const dial = e.target.closest('.dial');
     if (!dial || dial.classList.contains('inactive')) return;
-    drag.active = true;
-    drag.dial   = dial;
+    drag.active   = true;
+    drag.dial     = dial;
     drag.startY   = e.pageY;
     drag.startRot = parseFloat(dial.dataset.rotation || 0);
     e.preventDefault();
@@ -27,16 +30,15 @@
 
   document.addEventListener('mousemove', e => {
     if (!drag.active) return;
-    const delta = drag.startY - e.pageY;   // drag up = increase
+    const delta = drag.startY - e.pageY;
     const rot = applyRotation(drag.dial, drag.startRot + delta);
-
-    // Sync hidden range input
     const input = drag.dial.parentElement.querySelector('input[type="range"]');
     if (input) {
-      const pct = (rot + 150) / 300;
-      const min = parseFloat(input.min), max = parseFloat(input.max);
+      const pct  = (rot + 150) / 300;
+      const min  = parseFloat(input.min);
+      const max  = parseFloat(input.max);
       const step = parseFloat(input.step) || 0.001;
-      const raw = min + pct * (max - min);
+      const raw  = min + pct * (max - min);
       input.value = Math.round(raw / step) * step;
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }
@@ -45,51 +47,19 @@
 
   document.addEventListener('mouseup', () => { drag.active = false; });
 
-  // Public: sync dial to current input value (call after programmatic value change)
   window.syncDial = function (input) {
     const dial = input.parentElement.querySelector('.dial');
     if (dial) applyRotation(dial, valToRot(input));
   };
+
   window.syncAllDials = function () {
     document.querySelectorAll('.knob-area input[type="range"]').forEach(window.syncDial);
   };
 })();
 
-// ── State ─────────────────────────────────────────────────────────────────────
-const state = {
-  session: null,
-  config: null,
-  paramMeta: null,
-  perNoteDeltaMeta: null,
-  currentMidi: 45,
-  currentNoteOverrides: {},
-  pollTimer: null,
-  jobRunning: false,
-  currentFile: null,
-};
-
-const API = (path) => `/api/sessions${path}`;
-
-// ── Utility ───────────────────────────────────────────────────────────────────
-async function apiFetch(path, opts = {}) {
-  const res = await fetch(API(path), {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    const detail = err.detail;
-    // FastAPI validation errors return detail as an array of objects
-    const msg = typeof detail === 'string'
-      ? detail
-      : Array.isArray(detail)
-        ? detail.map(d => `${d.loc?.join('.')}: ${d.msg}`).join('; ')
-        : JSON.stringify(detail) || res.statusText;
-    throw new Error(`${res.status} ${msg}`);
-  }
-  return res.json();
-}
-
+// ══════════════════════════════════════════════════════════════════════════════
+// Utility
+// ══════════════════════════════════════════════════════════════════════════════
 function el(id) { return document.getElementById(id); }
 
 function midiToName(midi) {
@@ -97,172 +67,167 @@ function midiToName(midi) {
   return names[midi % 12] + (Math.floor(midi / 12) - 1);
 }
 
-function showError(id, msg) {
-  const e = el(id);
-  if (e) { e.textContent = msg; e.classList.remove('hidden'); }
+function bankSuffix(wavDir) {
+  // Extract last path component (bank name) from wav dir path, strip trailing slashes
+  const trimmed = (wavDir || '').replace(/[/\\]+$/, '');
+  const parts = trimmed.split(/[/\\]/);
+  return parts[parts.length - 1] || '';
 }
 
-function closeModal(id) { el(id).classList.add('hidden'); }
-
-// ── Session list ──────────────────────────────────────────────────────────────
-async function loadSessions() {
-  const sessions = await apiFetch('');
-  const sel = el('session-select');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">— select session —</option>';
-  sessions.forEach(s => {
-    const o = document.createElement('option');
-    o.value = s.name;
-    o.textContent = `${s.name}  (${s.n_generated} files)`;
-    sel.appendChild(o);
-  });
-  if (cur && sessions.find(s => s.name === cur)) sel.value = cur;
+function derivePaths(wavDir) {
+  const suffix = bankSuffix(wavDir);
+  if (!suffix) return { params: 'analysis/params.json', profile: 'analysis/params-nn-profile.json' };
+  return {
+    params:  `analysis/params-${suffix}.json`,
+    profile: `analysis/params-nn-profile-${suffix}.json`,
+  };
 }
 
-async function selectSession(name) {
-  if (!name) {
-    state.session = null;
-    el('main-panel').classList.add('hidden');
-    el('btn-delete-session').disabled = true;
-    el('train-out').value = 'analysis/params_profile.json';
-    el('lcd-patch-name').textContent = '— NO SESSION —';
-    stopPolling();
-    return;
-  }
-  state.session = name;
-  el('btn-delete-session').disabled = false;
-  el('main-panel').classList.remove('hidden');
-  el('train-out').value = `analysis/params_profile_${name}.json`;
-  el('lcd-patch-name').textContent = name.toUpperCase();
-  await reloadConfig();
-  await loadFiles();
-  startPolling();
+function closeModal(id) {
+  const m = el(id);
+  if (m) m.classList.add('hidden');
 }
 
-// ── Velocity profile sliders ──────────────────────────────────────────────────
-function renderVelProfileSliders() {
-  const profile = state.config.velocity_rms_profile;
-  const container = el('vel-profile-sliders');
-  container.innerHTML = '';
-
-  for (let v = 0; v <= 7; v++) {
-    const ratio = parseFloat(profile[String(v)]);
-    const row = document.createElement('div');
-    row.className = 'vel-slider-row';
-
-    const lbl = document.createElement('label');
-    lbl.textContent = `v${v}`;
-    lbl.title = `Velocity ${v} RMS ratio (vel7 = 1.0)`;
-
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = 0.02; slider.max = 1.0; slider.step = 0.01;
-    slider.value = ratio;
-
-    const valSpan = document.createElement('span');
-    valSpan.className = 'lcd';
-    valSpan.style.fontSize = '12px';
-    valSpan.textContent = ratio.toFixed(2);
-
-    slider.addEventListener('input', () => {
-      const val = parseFloat(slider.value);
-      valSpan.textContent = val.toFixed(2);
-      if (!state.config.velocity_rms_profile) state.config.velocity_rms_profile = {};
-      state.config.velocity_rms_profile[String(v)] = val;
+// ══════════════════════════════════════════════════════════════════════════════
+// API helpers
+// ══════════════════════════════════════════════════════════════════════════════
+const API = {
+  async sessions(path = '', opts = {}) {
+    return API._fetch('/api/sessions' + path, opts);
+  },
+  async pipeline(path = '', opts = {}) {
+    return API._fetch('/api/pipeline' + path, opts);
+  },
+  async profile(path = '', opts = {}) {
+    return API._fetch('/api/profile' + path, opts);
+  },
+  async _fetch(url, opts = {}) {
+    const res = await fetch(url, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
     });
-
-    row.appendChild(lbl); row.appendChild(slider); row.appendChild(valSpan);
-    container.appendChild(row);
-  }
-}
-
-// ── Config ────────────────────────────────────────────────────────────────────
-async function reloadConfig() {
-  const data = await apiFetch(`/${state.session}/config`);
-  state.config = data.config;
-  state.paramMeta = data.param_meta;
-  state.perNoteDeltaMeta = data.per_note_delta_meta;
-  renderGlobalSliders();
-  renderVelProfileSliders();
-}
-
-function renderGlobalSliders() {
-  for (const group of ['render', 'timbre', 'stereo']) {
-    const container = el(`sliders-${group}`);
-    container.innerHTML = '';
-    const section = state.config[group] || {};
-    for (const [key, meta] of Object.entries(state.paramMeta)) {
-      if (meta.group !== group) continue;
-      container.appendChild(buildKnob(key, section[key], meta, (k, v) => {
-        state.config[group][k] = v;
-      }));
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      const detail = err.detail;
+      const msg = typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map(d => `${(d.loc || []).join('.')}: ${d.msg}`).join('; ')
+          : JSON.stringify(detail) || res.statusText;
+      throw new Error(`${res.status} ${msg}`);
     }
-  }
-}
+    return res.json();
+  },
+};
 
-// Build 11 scale mark <li> elements
-function buildKnobMarks() {
-  const ul = document.createElement('ul');
-  ul.className = 'knob-marks';
-  for (let i = 0; i < 11; i++) {
-    ul.appendChild(document.createElement('li'));
-  }
-  return ul;
-}
+// ══════════════════════════════════════════════════════════════════════════════
+// Knob builder
+// ══════════════════════════════════════════════════════════════════════════════
+const Knob = {
+  buildMarks() {
+    const ul = document.createElement('ul');
+    ul.className = 'knob-marks';
+    for (let i = 0; i < 11; i++) ul.appendChild(document.createElement('li'));
+    return ul;
+  },
 
-function buildKnob(key, value, meta, onChange) {
-  const wrap = document.createElement('div');
-  wrap.className = 'knob-wrap';
+  build(key, value, meta, onChange) {
+    const wrap = document.createElement('div');
+    wrap.className = 'knob-wrap';
 
-  const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  const shortLabel = label.length > 10 ? label.slice(0, 10) : label;
+    const label     = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const shortLabel = label.length > 10 ? label.slice(0, 10) : label;
+    const docTitle  = (meta.doc || key) + (meta.unit ? ` [${meta.unit}]` : '');
 
-  // Null-toggle (optional param — e.g. duration)
-  if (meta.default === null) {
-    const enabled = value !== null;
+    // Optional param (null default) — has enable LED
+    if (meta.default === null) {
+      const enabled = value !== null;
 
-    const nameRow = document.createElement('div');
-    nameRow.style.cssText = 'display:flex;align-items:center;gap:4px;';
+      const nameRow = document.createElement('div');
+      nameRow.style.cssText = 'display:flex;align-items:center;gap:4px;';
 
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'knob-name';
+      nameSpan.textContent = shortLabel;
+      nameSpan.title = docTitle;
+
+      const toggleWrap = document.createElement('label');
+      toggleWrap.className = 'null-enable';
+      const cb = document.createElement('input');
+      cb.type    = 'checkbox';
+      cb.checked = enabled;
+      cb.id = `null-${key}`;
+      const dot = document.createElement('span');
+      dot.className = 'led-dot';
+      toggleWrap.appendChild(cb);
+      toggleWrap.appendChild(dot);
+
+      nameRow.appendChild(nameSpan);
+      nameRow.appendChild(toggleWrap);
+      wrap.appendChild(nameRow);
+
+      const area  = document.createElement('div');
+      area.className = 'knob-area';
+      const input = document.createElement('input');
+      input.type  = 'range';
+      input.min   = meta.min; input.max = meta.max; input.step = meta.step;
+      input.value = value ?? (meta.min + meta.max) / 2;
+      input.style.display = 'none';
+      const dial  = document.createElement('div');
+      dial.className = 'dial' + (enabled ? '' : ' inactive');
+      area.appendChild(input);
+      area.appendChild(dial);
+      area.appendChild(Knob.buildMarks());
+      wrap.appendChild(area);
+
+      const valSpan = document.createElement('span');
+      valSpan.className = 'lcd';
+      valSpan.style.fontSize = '12px';
+      valSpan.textContent = enabled ? Number(input.value).toFixed(2) : 'auto';
+      wrap.appendChild(valSpan);
+
+      input.addEventListener('input', () => {
+        const v = parseFloat(input.value);
+        valSpan.textContent = v.toFixed(2);
+        onChange(key, v);
+        syncDial(input);
+      });
+      cb.addEventListener('change', () => {
+        const en = cb.checked;
+        dial.classList.toggle('inactive', !en);
+        const v = en ? parseFloat(input.value) : null;
+        onChange(key, v);
+        valSpan.textContent = en ? Number(input.value).toFixed(2) : 'auto';
+      });
+      setTimeout(() => syncDial(input), 0);
+      return wrap;
+    }
+
+    // Normal knob
     const nameSpan = document.createElement('span');
     nameSpan.className = 'knob-name';
     nameSpan.textContent = shortLabel;
-    nameSpan.title = meta.doc || key;
+    nameSpan.title = docTitle;
+    wrap.appendChild(nameSpan);
 
-    const toggleWrap = document.createElement('label');
-    toggleWrap.className = 'null-enable';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.className = 'moog-switch';
-    cb.checked = enabled;
-    cb.id = `null-${key}`;
-    const dot = document.createElement('span');
-    dot.className = 'led-dot';
-    toggleWrap.appendChild(cb);
-    toggleWrap.appendChild(dot);
-
-    nameRow.appendChild(nameSpan);
-    nameRow.appendChild(toggleWrap);
-    wrap.appendChild(nameRow);
-
-    const area = document.createElement('div');
+    const area  = document.createElement('div');
     area.className = 'knob-area';
     const input = document.createElement('input');
-    input.type = 'range';
-    input.min = meta.min; input.max = meta.max; input.step = meta.step;
-    input.value = value ?? (meta.min + meta.max) / 2;
+    input.type  = 'range';
+    input.min   = meta.min; input.max = meta.max; input.step = meta.step;
+    input.value = value ?? meta.min;
     input.style.display = 'none';
-    const dial = document.createElement('div');
-    dial.className = 'dial' + (enabled ? '' : ' inactive');
+    const dial  = document.createElement('div');
+    dial.className = 'dial';
     area.appendChild(input);
     area.appendChild(dial);
-    area.appendChild(buildKnobMarks());
+    area.appendChild(Knob.buildMarks());
     wrap.appendChild(area);
 
     const valSpan = document.createElement('span');
     valSpan.className = 'lcd';
     valSpan.style.fontSize = '12px';
-    valSpan.textContent = enabled ? Number(input.value).toFixed(2) : 'auto';
+    valSpan.textContent = Number(value ?? meta.min).toFixed(2);
     wrap.appendChild(valSpan);
 
     input.addEventListener('input', () => {
@@ -271,646 +236,938 @@ function buildKnob(key, value, meta, onChange) {
       onChange(key, v);
       syncDial(input);
     });
-    cb.addEventListener('change', () => {
-      const en = cb.checked;
-      dial.classList.toggle('inactive', !en);
-      const v = en ? parseFloat(input.value) : null;
-      onChange(key, v);
-      valSpan.textContent = en ? Number(input.value).toFixed(2) : 'auto';
-    });
     setTimeout(() => syncDial(input), 0);
     return wrap;
-  }
+  },
+};
 
-  // Normal knob
-  const nameSpan = document.createElement('span');
-  nameSpan.className = 'knob-name';
-  nameSpan.textContent = shortLabel;
-  nameSpan.title = (meta.doc || key) + (meta.unit ? ` [${meta.unit}]` : '');
-  wrap.appendChild(nameSpan);
+// ══════════════════════════════════════════════════════════════════════════════
+// Session component
+// ══════════════════════════════════════════════════════════════════════════════
+const Session = {
+  name: null,
+  config: null,
+  paramMeta: null,
+  perNoteDeltaMeta: null,
 
-  const area = document.createElement('div');
-  area.className = 'knob-area';
-  const input = document.createElement('input');
-  input.type = 'range';
-  input.min = meta.min; input.max = meta.max; input.step = meta.step;
-  input.value = value ?? meta.min;
-  input.style.display = 'none';
-  const dial = document.createElement('div');
-  dial.className = 'dial';
-  area.appendChild(input);
-  area.appendChild(dial);
-  area.appendChild(buildKnobMarks());
-  wrap.appendChild(area);
+  init() {
+    el('session-select').addEventListener('change', e => Session.select(e.target.value));
 
-  const valSpan = document.createElement('span');
-  valSpan.className = 'lcd';
-  valSpan.style.fontSize = '12px';
-  valSpan.textContent = Number(value).toFixed(2);
-  wrap.appendChild(valSpan);
-
-  input.addEventListener('input', () => {
-    const v = parseFloat(input.value);
-    valSpan.textContent = v.toFixed(2);
-    onChange(key, v);
-    syncDial(input);
-  });
-  setTimeout(() => syncDial(input), 0);
-  return wrap;
-}
-
-// ── Per-note ──────────────────────────────────────────────────────────────────
-async function loadNoteOverrides(midi) {
-  const data = await apiFetch(`/${state.session}/note/${midi}`);
-  state.currentMidi = midi;
-  state.currentNoteOverrides = data.overrides || {};
-  el('note-name-display').textContent = data.note_name;
-  renderPerNoteSliders(data);
-}
-
-function renderPerNoteSliders(data) {
-  const container = el('sliders-per-note');
-  container.innerHTML = '';
-
-  for (const [key, meta] of Object.entries(state.perNoteDeltaMeta)) {
-    const currentVal = data.overrides[key] ?? meta.default;
-    const resolved = data.resolved;
-    const globalKey = key.replace('_delta', '').replace('_scale', '');
-    const globalVal = resolved[globalKey];
-
-    const knob = buildKnob(key, currentVal, {
-      ...meta,
-      doc: meta.doc + (globalVal !== undefined ? `\n\nGlobal: ${globalVal}` : ''),
-    }, (k, v) => {
-      state.currentNoteOverrides[k] = v;
+    // "Use Bank" — create session named after bank if not exists, then select it
+    el('btn-use-bank').addEventListener('click', async () => {
+      const wav  = el('pipe-wav-dir')?.value.trim();
+      const name = bankSuffix(wav);
+      if (!name) {
+        el('pipe-status').textContent = 'Set Bank dir first.';
+        return;
+      }
+      // If session already exists, just select it
+      const existing = await API.sessions('');
+      if (existing.find(s => s.name === name)) {
+        el('session-select').value = name;
+        await Session.select(name);
+        return;
+      }
+      // Confirm create
+      el('modal-bank-desc').textContent =
+        `Create session "${name}" for bank "${wav}"?`;
+      el('modal-error').classList.add('hidden');
+      el('modal-new-session').classList.remove('hidden');
     });
-    container.appendChild(knob);
-  }
-}
 
-el('note-midi').addEventListener('input', () => {
-  el('note-name-display').textContent = midiToName(parseInt(el('note-midi').value) || 45);
-});
-
-el('btn-load-note').addEventListener('click', () => {
-  const midi = parseInt(el('note-midi').value);
-  if (midi >= 21 && midi <= 108) loadNoteOverrides(midi);
-});
-
-el('btn-clear-note').addEventListener('click', async () => {
-  if (!state.session) return;
-  await apiFetch(`/${state.session}/note/${state.currentMidi}`, { method: 'DELETE' });
-  await loadNoteOverrides(state.currentMidi);
-});
-
-// ── Save params ───────────────────────────────────────────────────────────────
-el('btn-save-params').addEventListener('click', async () => {
-  if (!state.session) return;
-  const payload = {
-    render: state.config.render,
-    timbre: state.config.timbre,
-    stereo: state.config.stereo,
-    velocity_rms_profile: state.config.velocity_rms_profile,
-  };
-  if (Object.keys(state.currentNoteOverrides).length > 0) {
-    payload.per_note = { [state.currentMidi]: state.currentNoteOverrides };
-  }
-  try {
-    await apiFetch(`/${state.session}/config`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
+    el('btn-create-session').addEventListener('click', async () => {
+      const wav  = el('pipe-wav-dir')?.value.trim();
+      const name = bankSuffix(wav);
+      try {
+        await API.sessions('', {
+          method: 'POST',
+          body: JSON.stringify({ name }),
+        });
+        closeModal('modal-new-session');
+        await Session.loadList();
+        el('session-select').value = name;
+        await Session.select(name);
+      } catch (err) {
+        const e = el('modal-error');
+        e.textContent = err.message;
+        e.classList.remove('hidden');
+      }
     });
-    el('btn-save-params').textContent = '✓ Saved';
-    setTimeout(() => { el('btn-save-params').textContent = 'Save Parameters'; }, 1200);
-  } catch (e) {
-    alert('Save failed: ' + e.message);
-  }
-});
 
-// ── Velocity checkboxes ───────────────────────────────────────────────────────
-function initVelCheckboxes() {
-  const wrap = el('vel-checkboxes');
-  wrap.innerHTML = '';
+    el('btn-cancel-modal').addEventListener('click', () => closeModal('modal-new-session'));
 
-  // "All" toggle
-  const allLbl = document.createElement('label');
-  allLbl.className = 'vel-check vel-check-all';
-  const allCb = document.createElement('input');
-  allCb.type = 'checkbox';
-  allCb.id = 'vel-all';
-  allCb.checked = false;
-  allCb.addEventListener('change', () => {
-    wrap.querySelectorAll('input[type="checkbox"]:not(#vel-all)')
-      .forEach(cb => { cb.checked = allCb.checked; });
-  });
-  const allSpan = document.createElement('span');
-  allSpan.textContent = 'All';
-  allLbl.appendChild(allCb);
-  allLbl.appendChild(allSpan);
-  wrap.appendChild(allLbl);
-
-  // Divider
-  const sep = document.createElement('span');
-  sep.className = 'vel-sep';
-  sep.textContent = '|';
-  wrap.appendChild(sep);
-
-  for (let v = 0; v <= 7; v++) {
-    const lbl = document.createElement('label');
-    lbl.className = 'vel-check';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.value = v;
-    cb.checked = v === 4;
-    cb.id = `vel-${v}`;
-    // Uncheck "All" if individual is deselected
-    cb.addEventListener('change', () => {
-      const all = wrap.querySelectorAll('input[type="checkbox"]:not(#vel-all)');
-      allCb.checked = Array.from(all).every(c => c.checked);
+    el('btn-delete-session').addEventListener('click', async () => {
+      if (!Session.name) return;
+      if (!confirm(`Delete session "${Session.name}" and all generated files?`)) return;
+      await API.sessions(`/${Session.name}`, { method: 'DELETE' });
+      await Session.loadList();
+      await Session.select('');
     });
-    const span = document.createElement('span');
-    span.textContent = v;
-    lbl.appendChild(cb);
-    lbl.appendChild(span);
-    wrap.appendChild(lbl);
-  }
-}
+  },
 
-function selectedVelocities() {
-  return Array.from(document.querySelectorAll('#vel-checkboxes input[type="checkbox"]:not(#vel-all):checked'))
-    .map(cb => parseInt(cb.value, 10));
-}
-
-// ── Generate ─────────────────────────────────────────────────────────────────
-el('btn-generate').addEventListener('click', async () => {
-  if (!state.session) return;
-  // Save current params before generating
-  try {
-    await apiFetch(`/${state.session}/config`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        render: state.config.render,
-        timbre: state.config.timbre,
-        stereo: state.config.stereo,
-        velocity_rms_profile: state.config.velocity_rms_profile,
-      }),
+  async loadList() {
+    const sessions = await API.sessions('');
+    const sel = el('session-select');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— select session —</option>';
+    sessions.forEach(s => {
+      const o = document.createElement('option');
+      o.value = s.name;
+      o.textContent = `${s.name}  (${s.n_generated} files)`;
+      sel.appendChild(o);
     });
-  } catch (e) {
-    el('gen-status').textContent = 'Config save error: ' + e.message;
-    return;
-  }
+    if (cur && sessions.find(s => s.name === cur)) sel.value = cur;
+  },
 
-  const body = {
-    midi_from: parseInt(el('gen-from').value),
-    midi_to:   parseInt(el('gen-to').value),
-    vel_layers: selectedVelocities(),
-  };
-  try {
-    await apiFetch(`/${state.session}/generate`, { method: 'POST', body: JSON.stringify(body) });
-    state.jobRunning = true;
-    el('btn-generate').classList.add('hidden');
-    el('btn-cancel').classList.remove('hidden');
-    el('progress-wrap').classList.remove('hidden');
-    el('gen-status').textContent = 'Starting…';
-  } catch (e) {
-    el('gen-status').textContent = 'Error: ' + e.message;
-  }
-});
+  async select(name) {
+    if (!name) {
+      Session.name = null;
+      el('main-panel').classList.add('hidden');
+      el('btn-delete-session').disabled = true;
+      el('pipe-out').value = derivePaths(el('pipe-wav-dir')?.value.trim() || '').profile;
+      el('gen-params-file').value = '';
+      el('lcd-patch-name').textContent = '— NO SESSION —';
+      Generate.stopPolling();
+      return;
+    }
+    Session.name = name;
+    el('btn-delete-session').disabled = false;
+    el('main-panel').classList.remove('hidden');
+    el('pipe-out').value = derivePaths(el('pipe-wav-dir')?.value.trim() || '').profile;
+    el('lcd-patch-name').textContent = name.toUpperCase();
+    await Session.loadConfig();
+    await Player.loadFiles();
+    // Populate Generate params field from session source_params
+    el('gen-params-file').value = Session.config?.source_params || '';
+    Generate.updateGenCmd();
+    // Restore in-progress generate job UI if server still has a running job
+    try {
+      const status = await API.sessions(`/${name}/generate/status`);
+      if (status && status.status === 'running') {
+        Generate.jobRunning = true;
+        el('btn-generate').classList.add('hidden');
+        el('btn-gen-cancel').classList.remove('hidden');
+        el('progress-wrap').classList.remove('hidden');
+      }
+    } catch { /* ignore */ }
+    Generate.startPolling();
+  },
 
-el('btn-cancel').addEventListener('click', async () => {
-  if (!state.session) return;
-  await apiFetch(`/${state.session}/generate/cancel`, { method: 'POST' }).catch(() => {});
-});
-
-async function pollGenerateStatus() {
-  if (!state.session) return;
-
-  // Config poll (detects external changes)
-  const data = await apiFetch(`/${state.session}/config`).catch(() => null);
-  if (data) {
-    state.config = data.config;
-    renderGlobalSliders();
+  async loadConfig() {
+    const data = await API.sessions(`/${Session.name}/config`);
+    Session.config          = data.config;
+    Session.paramMeta       = data.param_meta;
+    Session.perNoteDeltaMeta = data.per_note_delta_meta;
+    Params.renderAllGroups();
+    Params.renderVelProfile();
     syncAllDials();
-  }
+  },
+};
 
-  if (!state.jobRunning) return;
+// ══════════════════════════════════════════════════════════════════════════════
+// Params component
+// ══════════════════════════════════════════════════════════════════════════════
+const Params = {
+  currentMidi: 45,
+  currentNoteOverrides: {},
 
-  const status = await apiFetch(`/${state.session}/generate/status`).catch(() => null);
-  if (!status || status.status === 'idle') return;
+  init() {
 
-  el('progress-fill').style.width = (status.progress_pct || 0) + '%';
-  el('progress-label').textContent = `${status.done} / ${status.total}`;
-  el('gen-status').textContent = status.last_file ? `Last: ${status.last_file}` : '';
-
-  if (status.status === 'done' || status.status === 'cancelled') {
-    state.jobRunning = false;
-    el('btn-generate').classList.remove('hidden');
-    el('btn-cancel').classList.add('hidden');
-    const errs = (status.errors || []).length;
-    el('gen-status').textContent = `${status.status} — ${status.done} files${errs ? `, ${errs} errors` : ''}`;
-    await loadFiles();
-  }
-}
-
-// ── File list ─────────────────────────────────────────────────────────────────
-async function loadFiles() {
-  if (!state.session) return;
-  const data = await apiFetch(`/${state.session}/files`).catch(() => ({ files: [] }));
-  const container = el('file-list');
-  container.innerHTML = '';
-  (data.files || []).forEach(f => {
-    const item = document.createElement('div');
-    item.className = 'file-item' + (state.currentFile === f.filename ? ' active' : '');
-    item.innerHTML = `<span class="file-name">${f.filename}</span><span class="file-size">${f.size_kb} KB</span>`;
-    item.addEventListener('click', () => playFile(f));
-    container.appendChild(item);
-  });
-}
-
-function playFile(f) {
-  state.currentFile = f.filename;
-  el('lcd-playing').textContent = f.filename;
-  const player = el('audio-player');
-  player.src = f.url;
-  player.play();
-  loadSpectrum(f.filename);
-  // Refresh active state
-  document.querySelectorAll('.file-item').forEach(item => {
-    item.classList.toggle('active', item.querySelector('.file-name').textContent === f.filename);
-  });
-}
-
-// ── Spectrum ──────────────────────────────────────────────────────────────────
-async function loadSpectrum(filename) {
-  el('spectrum-status').textContent = 'Computing spectrum…';
-  try {
-    const data = await apiFetch(`/${state.session}/spectrum/${filename}`);
-    drawSpectrum(data.freqs, data.magnitudes_db);
-    el('spectrum-status').textContent = `${data.duration_s}s · ${data.sr} Hz`;
-  } catch (e) {
-    el('spectrum-status').textContent = 'Spectrum error: ' + e.message;
-  }
-}
-
-function drawSpectrum(freqs, db) {
-  const canvas = el('spectrum-canvas');
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width;
-  const H = canvas.height;
-
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#001200';
-  ctx.fillRect(0, 0, W, H);
-
-  // Auto-scale: peak snapped to nearest 10 dB above, floor -80
-  const dbPeak = Math.max(...db);
-  const dbMax = Math.ceil(dbPeak / 10) * 10;
-  const dbMin = -80;
-  const dbRange = dbMax - dbMin;
-
-  // Grid lines every 10 dB
-  ctx.lineWidth = 1;
-  for (let d = dbMin; d <= dbMax; d += 10) {
-    const y = H - ((d - dbMin) / dbRange) * H;
-    ctx.strokeStyle = d === 0 ? '#1a5a1a' : '#0a2a0a';
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-    ctx.fillStyle = d % 20 === 0 ? '#00aa44aa' : '#006622aa';
-    ctx.font = '9px monospace';
-    ctx.fillText(d + 'dB', 2, y - 2);
-  }
-
-  // Spectrum curve
-  const nPts = db.length;
-  ctx.beginPath();
-  ctx.strokeStyle = '#00ff77';
-  ctx.lineWidth = 1.5;
-  ctx.shadowColor = '#00ff7788';
-  ctx.shadowBlur = 4;
-
-  for (let i = 0; i < nPts; i++) {
-    const x = (i / (nPts - 1)) * W;
-    const y = H - ((db[i] - dbMin) / dbRange) * H;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-
-  // Fill under curve
-  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
-  ctx.fillStyle = 'rgba(0, 255, 119, 0.06)';
-  ctx.fill();
-}
-
-// ── Polling ───────────────────────────────────────────────────────────────────
-function startPolling() {
-  stopPolling();
-  state.pollTimer = setInterval(pollGenerateStatus, 800);
-}
-function stopPolling() {
-  if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
-}
-
-// ── Session controls ─────────────────────────────────────────────────────────
-el('session-select').addEventListener('change', (e) => selectSession(e.target.value));
-
-el('btn-new-session').addEventListener('click', async () => {
-  el('new-session-name').value = '';
-  el('modal-error').classList.add('hidden');
-  el('new-session-params-custom-wrap').classList.add('hidden');
-
-  // Populate profile dropdown
-  const sel = el('new-session-params-select');
-  sel.innerHTML = '';
-  try {
-    const res = await fetch('/api/profile/list');
-    const data = await res.json();
-    (data.profiles || ['analysis/params.json']).forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p;
-      const label = p.replace('analysis/', '');
-      opt.textContent = p.includes('profile') ? `${label}  ✓ trained` : label;
-      sel.appendChild(opt);
+    el('note-midi').addEventListener('input', () => {
+      el('note-name-display').textContent = midiToName(parseInt(el('note-midi').value) || 45);
     });
-  } catch {
-    const opt = document.createElement('option');
-    opt.value = 'analysis/params.json';
-    opt.textContent = 'analysis/params.json';
-    sel.appendChild(opt);
-  }
-  // Custom path option
-  const customOpt = document.createElement('option');
-  customOpt.value = '__custom__';
-  customOpt.textContent = '— custom path…';
-  sel.appendChild(customOpt);
 
-  el('modal-new-session').classList.remove('hidden');
-  setTimeout(() => el('new-session-name').focus(), 50);
-});
+    el('btn-load-note').addEventListener('click', () => {
+      const midi = parseInt(el('note-midi').value);
+      if (midi >= 21 && midi <= 108) Params.loadNote(midi);
+    });
 
-el('new-session-params-select').addEventListener('change', () => {
-  const isCustom = el('new-session-params-select').value === '__custom__';
-  el('new-session-params-custom-wrap').classList.toggle('hidden', !isCustom);
-});
+    el('btn-clear-note').addEventListener('click', async () => {
+      if (!Session.name) return;
+      await API.sessions(`/${Session.name}/note/${Params.currentMidi}`, { method: 'DELETE' });
+      await Params.loadNote(Params.currentMidi);
+    });
 
-el('btn-create-session').addEventListener('click', async () => {
-  const name = el('new-session-name').value.trim();
-  const selVal = el('new-session-params-select').value;
-  const params = selVal === '__custom__'
-    ? el('new-session-params-custom').value.trim()
-    : selVal;
-  if (!name) { showError('modal-error', 'Name is required'); return; }
-  const instrument_meta = {
-    instrumentName: el('new-inst-name').value.trim() || name,
-    author:         el('new-inst-author').value.trim() || 'Unknown',
-    category:       el('new-inst-category').value.trim() || 'Piano',
-    instrumentVersion: el('new-inst-version').value.trim() || '1',
-    description:    el('new-inst-desc').value.trim() || 'N/A',
-  };
-  try {
-    await apiFetch('', {
+    const saveHandler = async (btn) => {
+      if (!Session.name) return;
+      const payload = {
+        render:               Session.config.render,
+        timbre:               Session.config.timbre,
+        stereo:               Session.config.stereo,
+        velocity_rms_profile: Session.config.velocity_rms_profile,
+      };
+      if (Object.keys(Params.currentNoteOverrides).length > 0) {
+        payload.per_note = { [Params.currentMidi]: Params.currentNoteOverrides };
+      }
+      try {
+        await API.sessions(`/${Session.name}/config`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        document.querySelectorAll('#btn-save-params, .btn-save-params-col').forEach(b => {
+          b.textContent = '✓ Saved';
+          setTimeout(() => { b.textContent = 'Save Parameters'; }, 1200);
+        });
+      } catch (err) {
+        alert('Save failed: ' + err.message);
+      }
+    };
+
+    el('btn-save-params').addEventListener('click', (e) => saveHandler(e.currentTarget));
+    document.querySelectorAll('.btn-save-params-col').forEach(btn =>
+      btn.addEventListener('click', (e) => saveHandler(e.currentTarget))
+    );
+  },
+
+
+  renderAllGroups() {
+    for (const group of ['render', 'timbre', 'stereo']) {
+      Params.renderGroup(group);
+    }
+  },
+
+  renderGroup(group) {
+    const container = el(`sliders-${group}`);
+    if (!container || !Session.paramMeta) return;
+    container.innerHTML = '';
+    const section = (Session.config && Session.config[group]) || {};
+    for (const [key, meta] of Object.entries(Session.paramMeta)) {
+      if (meta.group !== group) continue;
+      container.appendChild(Knob.build(key, section[key], meta, (k, v) => {
+        if (Session.config && Session.config[group]) Session.config[group][k] = v;
+      }));
+    }
+  },
+
+  async loadNote(midi) {
+    const data = await API.sessions(`/${Session.name}/note/${midi}`);
+    Params.currentMidi = midi;
+    Params.currentNoteOverrides = data.overrides || {};
+    el('note-name-display').textContent = data.note_name;
+    Params.renderNote(data);
+  },
+
+  renderNote(data) {
+    const container = el('sliders-per-note');
+    if (!container || !Session.perNoteDeltaMeta) return;
+    container.innerHTML = '';
+    for (const [key, meta] of Object.entries(Session.perNoteDeltaMeta)) {
+      const currentVal = (data.overrides || {})[key] ?? meta.default;
+      const globalKey  = key.replace('_delta', '').replace('_scale', '');
+      const globalVal  = (data.resolved || {})[globalKey];
+      const knob = Knob.build(key, currentVal, {
+        ...meta,
+        doc: (meta.doc || key) + (globalVal !== undefined ? `\n\nGlobal: ${globalVal}` : ''),
+      }, (k, v) => {
+        Params.currentNoteOverrides[k] = v;
+      });
+      container.appendChild(knob);
+    }
+  },
+
+  renderVelProfile() {
+    const profile   = Session.config && Session.config.velocity_rms_profile;
+    const container = el('vel-profile-sliders');
+    if (!container || !profile) return;
+    container.innerHTML = '';
+    container.className = 'knobs-col';
+
+    for (let v = 0; v <= 7; v++) {
+      const ratio = parseFloat(profile[String(v)]) || 0;
+      const meta  = { min: 0.02, max: 1.0, step: 0.01, default: ratio,
+                      doc: `Velocity layer ${v} — RMS amplitude ratio (vel 7 = 1.0)`,
+                      unit: 'ratio' };
+      const knob  = Knob.build(`vel_${v}`, ratio, meta, (_k, val) => {
+        if (Session.config && Session.config.velocity_rms_profile)
+          Session.config.velocity_rms_profile[String(v)] = val;
+      });
+      container.appendChild(knob);
+    }
+    syncAllDials();
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Pipeline component
+// ══════════════════════════════════════════════════════════════════════════════
+const Pipeline = {
+  pollTimer:  null,
+  _sseMap:    {},   // step -> EventSource
+  STEPS: ['extract', 'eq', 'train'],
+
+  init() {
+    el('btn-pipe-all').addEventListener('click',     () => Pipeline.run('extract'));
+    el('btn-pipe-extract').addEventListener('click', () => Pipeline.run('extract'));
+    el('btn-pipe-eq').addEventListener('click',      () => Pipeline.run('eq'));
+    el('btn-pipe-train').addEventListener('click',   () => Pipeline.run('train'));
+
+    el('btn-pipe-cancel').addEventListener('click', () => {
+      fetch('/api/pipeline/cancel', { method: 'POST' }).catch(() => {});
+      el('pipe-status').textContent = 'Cancelling…';
+    });
+
+    el('btn-pipe-apply').addEventListener('click', async () => {
+      if (!Session.name) {
+        el('pipe-status').textContent = 'Select a session first.';
+        return;
+      }
+      try {
+        const data = await API.pipeline(`/apply/${Session.name}`, { method: 'POST' });
+        el('btn-pipe-apply').classList.add('hidden');
+        const prof = data.vel_profile || {};
+        const summary = Object.entries(prof).map(([v, r]) => `v${v}=${r}`).join(' ');
+        el('pipe-status').textContent = `Applied — vel: ${summary}`;
+        await Session.loadConfig();
+        el('gen-params-file').value = data.source_params || Session.config?.source_params || '';
+        Generate.updateGenCmd();
+      } catch (err) {
+        el('pipe-status').textContent = 'Apply error: ' + err.message;
+      }
+    });
+
+    el('btn-snapshot').addEventListener('click', async () => {
+      if (!Session.name) {
+        el('pipe-status').textContent = 'Select a session first.';
+        return;
+      }
+      try {
+        const data = await API.pipeline(`/snapshot/${Session.name}`, { method: 'POST' });
+        el('pipe-status').textContent = `Snapshot → ${data.snapshot_dir}`;
+      } catch (err) {
+        el('pipe-status').textContent = 'Snapshot error: ' + err.message;
+      }
+    });
+
+    // Restore in-progress state on page load
+    fetch('/api/pipeline/status').then(r => r.json()).then(j => {
+      if (j.status === 'running') {
+        el('btn-pipe-all').classList.add('hidden');
+        el('btn-pipe-cancel').classList.remove('hidden');
+        Pipeline._startPoll();
+      }
+      Pipeline.updateUI(j);
+    }).catch(() => {});
+
+    // Open SSE log streams immediately (tails existing log files + live updates)
+    Pipeline.STEPS.forEach(step => Pipeline._openSSE(step));
+
+    // Build initial command previews and update on any option change
+    const cmdTriggers = [
+      'pipe-wav-dir', 'pipe-workers',
+      'pipe-extract-workers', 'pipe-extract-verbose',
+      'pipe-eq-workers',
+      'pipe-out', 'pipe-epochs', 'pipe-lr', 'pipe-hidden', 'pipe-no-preserve',
+    ];
+    cmdTriggers.forEach(id => {
+      const inp = el(id);
+      if (inp) inp.addEventListener('input', () => Pipeline.updateAllCommands());
+      if (inp) inp.addEventListener('change', () => Pipeline.updateAllCommands());
+    });
+
+    // Auto-derive pipe-out from wav-dir bank name
+    function syncProfilePath() {
+      const wav = el('pipe-wav-dir')?.value.trim() || '';
+      el('pipe-out').value = derivePaths(wav).profile;
+      Pipeline.updateAllCommands();
+      Generate.updateGenCmd();
+    }
+    el('pipe-wav-dir')?.addEventListener('input',  syncProfilePath);
+    el('pipe-wav-dir')?.addEventListener('change', syncProfilePath);
+    syncProfilePath();
+
+    Pipeline.updateAllCommands();
+
+    // EGRB polling (always active)
+    Pipeline.pollEgrb();
+    setInterval(() => Pipeline.pollEgrb(), 5000);
+  },
+
+  run(fromStep) {
+    // Per-step workers override (falls back to shared workers)
+    const sharedWorkers = parseInt(el('pipe-workers').value) || 4;
+    const extractWorkers = parseInt(el('pipe-extract-workers').value) || sharedWorkers;
+    const eqWorkers      = parseInt(el('pipe-eq-workers').value)      || sharedWorkers;
+    const workers = fromStep === 'extract' ? extractWorkers
+                  : fromStep === 'eq'      ? eqWorkers
+                  : sharedWorkers;
+    const wavDir = el('pipe-wav-dir').value.trim();
+    const paths  = derivePaths(wavDir);
+    const body = {
+      wav_dir:     wavDir,
+      out:         el('pipe-out').value.trim() || paths.profile,
+      params_out:  paths.params,
+      epochs:      parseInt(el('pipe-epochs').value),
+      lr:          parseFloat(el('pipe-lr').value) || 0.003,
+      hidden:      parseInt(el('pipe-hidden').value) || 64,
+      no_preserve: el('pipe-no-preserve').checked,
+      workers:     workers,
+      from_step:   fromStep,
+    };
+    fetch('/api/pipeline/run', {
       method: 'POST',
-      body: JSON.stringify({ name, source_params: params, instrument_meta }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(res => {
+      if (!res.ok) return res.json().then(e => { throw new Error(e.detail || res.statusText); });
+      el('btn-pipe-all').classList.add('hidden');
+      el('btn-pipe-cancel').classList.remove('hidden');
+      el('btn-pipe-apply').classList.add('hidden');
+      el('pipe-status').textContent = `Starting ${fromStep}…`;
+      // Clear log panes + reset LCD rows for affected steps
+      const fromIdx = Pipeline.STEPS.indexOf(fromStep);
+      Pipeline.STEPS.forEach((step, i) => {
+        if (i < fromIdx) return;
+        const pre    = el(`plog-${step}`);
+        const fill   = el(`lcd-fill-${step}`);
+        const status = el(`lcd-status-${step}`);
+        const row    = el(`lcd-step-${step}`);
+        if (pre)    pre.textContent = '';
+        if (fill)   fill.style.width = '0%';
+        if (status) status.textContent = '…';
+        if (row)    row.className = 'lcd-step-row';
+      });
+      Pipeline._startPoll();
+    }).catch(err => {
+      el('pipe-status').textContent = 'Error: ' + err.message;
     });
-    closeModal('modal-new-session');
-    await loadSessions();
-    el('session-select').value = name.toLowerCase().replace(/ /g, '_');
-    await selectSession(el('session-select').value);
-  } catch (e) {
-    showError('modal-error', e.message);
-  }
-});
+  },
 
-el('btn-delete-session').addEventListener('click', async () => {
-  if (!state.session) return;
-  if (!confirm(`Delete session "${state.session}" and all its generated files?`)) return;
-  await apiFetch(`/${state.session}`, { method: 'DELETE' });
-  await loadSessions();
-  await selectSession('');
-});
+  cancel() {
+    fetch('/api/pipeline/cancel', { method: 'POST' }).catch(() => {});
+  },
 
-// ── DDSP training (legacy — used only for profile /apply endpoint) ────────────
-async function refreshTrainInitSelect() { /* kept for compatibility, no-op */ }
-
-
-// ── Pipeline ──────────────────────────────────────────────────────────────────
-const PIPE_API = (path) => `/api/pipeline${path}`;
-const PIPE_STEPS = ['extract', 'eq', 'train'];
-
-let pipePollTimer = null;
-
-function pipeEl(suffix, step) { return el(`p${suffix}-${step}`); }
-
-function updateLcdStep(step, stepData) {
-  const row = el(`lcd-step-${step}`);
-  const fill = el(`lcd-fill-${step}`);
-  const status = el(`lcd-status-${step}`);
-  if (!row) return;
-
-  const pct = stepData.progress_pct || 0;
-  fill.style.width = pct + '%';
-
-  row.classList.remove('step-running', 'step-done', 'step-error');
-  const s = stepData.status;
-  if (s === 'running') {
-    row.classList.add('step-running');
-    status.textContent = pct ? `${pct}%` : '…';
-  } else if (s === 'done') {
-    row.classList.add('step-done');
-    status.textContent = '✓';
-  } else if (s === 'error') {
-    row.classList.add('step-error');
-    status.textContent = 'ERR';
-  } else if (s === 'skipped') {
-    status.textContent = '—';
-  } else {
-    status.textContent = '—';
-  }
-}
-
-function updatePipelineUI(j) {
-  const steps = j.steps || {};
-  PIPE_STEPS.forEach(step => {
-    const sd = steps[step] || {};
-    const led = pipeEl('led', step);
-    const statusEl = pipeEl('status', step);
-    const logEl = pipeEl('log', step);
-    const progWrap = el(`pprog-${step}-wrap`);
-    const progFill = el(`pprog-${step}-fill`);
-
-    // LED
-    if (led) {
-      led.className = 'pstep-led';
-      if (sd.status === 'running') led.classList.add('led-running');
-      else if (sd.status === 'done') led.classList.add('led-done');
-      else if (sd.status === 'error') led.classList.add('led-error');
-      else if (sd.status === 'skipped') led.classList.add('led-skipped');
+  buildCmd(step) {
+    const wav  = el('pipe-wav-dir')?.value.trim() || '<bank>';
+    const paths = derivePaths(wav);
+    const sharedW = el('pipe-workers')?.value || '4';
+    if (step === 'extract') {
+      const w = el('pipe-extract-workers')?.value || sharedW;
+      const v = el('pipe-extract-verbose')?.checked ? ' \\\n    --verbose' : '';
+      return `python -u analysis/extract-params.py \\\n    --bank ${wav} \\\n    --out ${paths.params} \\\n    --workers ${w}${v}`;
+    } else if (step === 'eq') {
+      const w = el('pipe-eq-workers')?.value || sharedW;
+      return `python -u analysis/compute-spectral-eq.py \\\n    --params ${paths.params} \\\n    --bank ${wav} \\\n    --workers ${w}`;
+    } else if (step === 'train') {
+      const out    = el('pipe-out')?.value.trim()    || paths.profile;
+      const epochs = el('pipe-epochs')?.value        || '300';
+      const lr     = el('pipe-lr')?.value            || '0.003';
+      const hidden = el('pipe-hidden')?.value        || '64';
+      const noPreserve = el('pipe-no-preserve')?.checked ? ' \\\n    --no-preserve-orig' : '';
+      return `python -u analysis/train-instrument-profile.py \\\n    --in ${paths.params} \\\n    --out ${out} \\\n    --epochs ${epochs} \\\n    --lr ${lr} \\\n    --hidden ${hidden}${noPreserve}`;
     }
+    return '';
+  },
 
-    // Progress bar
-    if (progWrap && progFill) {
-      const pct = sd.progress_pct || 0;
-      if (sd.status === 'running' || sd.status === 'done' || sd.status === 'error') {
-        progWrap.classList.remove('hidden');
-        progFill.style.width = pct + '%';
+  updateAllCommands() {
+    ['extract', 'eq', 'train'].forEach(step => {
+      const pre = el(`pcmd-${step}`);
+      if (pre) pre.textContent = Pipeline.buildCmd(step);
+    });
+  },
+
+  _startPoll() {
+    if (!Pipeline.pollTimer) {
+      Pipeline.pollTimer = setInterval(() => Pipeline.poll(), 900);
+    }
+    // Open SSE streams for all steps
+    Pipeline.STEPS.forEach(step => Pipeline._openSSE(step));
+  },
+
+  _stopPoll() {
+    clearInterval(Pipeline.pollTimer); Pipeline.pollTimer = null;
+    // Leave SSE connections open — they self-tail the log files continuously.
+    // Streams auto-reconnect if server restarts (browser EventSource behaviour).
+  },
+
+  _openSSE(step) {
+    if (Pipeline._sseMap[step]) return;   // already open
+    const es = new EventSource(`/api/pipeline/log-stream/${step}`);
+    Pipeline._sseMap[step] = es;
+    es.onmessage = e => {
+      const pre = el(`plog-${step}`);
+      if (!pre) return;
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
+      if (msg.replace) {
+        pre.textContent = msg.lines.join('\n');
       } else {
-        progWrap.classList.add('hidden');
-        progFill.style.width = '0%';
+        if (pre.textContent) pre.textContent += '\n' + msg.lines.join('\n');
+        else                  pre.textContent  = msg.lines.join('\n');
+        // Keep last 200 lines
+        const allLines = pre.textContent.split('\n');
+        if (allLines.length > 200) pre.textContent = allLines.slice(-200).join('\n');
       }
+      pre.scrollTop = pre.scrollHeight;
+    };
+    es.onerror = () => {
+      // On error EventSource auto-retries; remove so _openSSE can re-add after reconnect
+      es.close();
+      delete Pipeline._sseMap[step];
+    };
+  },
+
+  async poll() {
+    try {
+      const j = await fetch('/api/pipeline/status').then(r => r.json());
+      Pipeline.updateUI(j);
+      if (j.status !== 'running') Pipeline._stopPoll();
+    } catch { /* ignore */ }
+  },
+
+
+  updateUI(j) {
+    const steps = j.steps || {};
+    Pipeline.STEPS.forEach(step => {
+      const sd       = steps[step] || {};
+      const led      = el(`pled-${step}`);
+      const statusEl = el(`pstatus-${step}`);
+      const logEl    = el(`plog-${step}`);
+      const progWrap = el(`pprog-${step}-wrap`);
+      const progFill = el(`pprog-${step}-fill`);
+
+      // LED state
+      if (led) {
+        led.className = 'pstep-led';
+        if      (sd.status === 'running') led.classList.add('led-running');
+        else if (sd.status === 'done')    led.classList.add('led-done');
+        else if (sd.status === 'error')   led.classList.add('led-error');
+        else if (sd.status === 'skipped') led.classList.add('led-skipped');
+      }
+
+      // Progress bar
+      if (progWrap && progFill) {
+        const pct = sd.progress_pct || 0;
+        if (sd.status === 'running' || sd.status === 'done' || sd.status === 'error') {
+          progWrap.classList.remove('hidden');
+          progFill.style.width = pct + '%';
+        } else {
+          progWrap.classList.add('hidden');
+          progFill.style.width = '0%';
+        }
+      }
+
+      // Train epoch label
+      if (step === 'train') {
+        const lbl = el('pprog-train-label');
+        if (lbl) {
+          const ep   = sd.epoch || 0;
+          const tot  = sd.total || 0;
+          const loss = sd.loss != null ? `  loss=${sd.loss.toFixed(4)}` : '';
+          lbl.textContent = tot > 0 ? `${ep}/${tot}${loss}` : '';
+        }
+      }
+
+      // Status text
+      if (statusEl) {
+        if      (sd.status === 'running') statusEl.textContent = 'Running…';
+        else if (sd.status === 'done')    statusEl.textContent = '✓ Done';
+        else if (sd.status === 'error')   statusEl.textContent = `✗ Error (rc=${sd.rc})`;
+        else                              statusEl.textContent = '';
+      }
+
+      // Log output handled by SSE streams (_openSSE); nothing to do here.
+
+      Pipeline.updateLcdStep(step, sd);
+    });
+
+    // Global pipeline status
+    const cancelBtn = el('btn-pipe-cancel');
+    const allBtn    = el('btn-pipe-all');
+    const applyBtn  = el('btn-pipe-apply');
+    const statusEl  = el('pipe-status');
+
+    if (j.status === 'running') {
+      cancelBtn.classList.remove('hidden');
+      allBtn.classList.add('hidden');
+      applyBtn.classList.add('hidden');
+      statusEl.textContent = `Running: ${j.step || ''}…`;
+    } else if (j.status === 'done') {
+      cancelBtn.classList.add('hidden');
+      allBtn.classList.remove('hidden');
+      applyBtn.classList.remove('hidden');
+      statusEl.textContent = '✓ Pipeline complete';
+    } else if (j.status === 'error') {
+      cancelBtn.classList.add('hidden');
+      allBtn.classList.remove('hidden');
+      statusEl.textContent = `✗ ${j.error || 'Error'}`;
+    } else if (j.status === 'cancelled') {
+      cancelBtn.classList.add('hidden');
+      allBtn.classList.remove('hidden');
+      statusEl.textContent = 'Cancelled';
     }
 
-    // Train-specific label
-    if (step === 'train' && el('pprog-train-label')) {
-      const ep = sd.epoch || 0;
-      const tot = sd.total || 0;
-      const loss = sd.loss != null ? `  loss=${sd.loss.toFixed(4)}` : '';
-      el('pprog-train-label').textContent = tot > 0 ? `${ep}/${tot}${loss}` : '';
+    Pipeline.STEPS.forEach(step => {
+      const btn = el(`btn-pipe-${step}`);
+      if (btn) btn.disabled = (j.status === 'running');
+    });
+    if (allBtn) allBtn.disabled = (j.status === 'running');
+  },
+
+  updateLcdStep(step, stepData) {
+    const row    = el(`lcd-step-${step}`);
+    const fill   = el(`lcd-fill-${step}`);
+    const status = el(`lcd-status-${step}`);
+    if (!row) return;
+
+    const pct = stepData.progress_pct || 0;
+    fill.style.width = pct + '%';
+    row.classList.remove('step-running', 'step-done', 'step-error');
+
+    const s = stepData.status;
+    if      (s === 'running') { row.classList.add('step-running'); status.textContent = pct ? `${pct}%` : '…'; }
+    else if (s === 'done')    { row.classList.add('step-done');    status.textContent = 'OK'; }
+    else if (s === 'error')   { row.classList.add('step-error');   status.textContent = 'ERR'; }
+    else if (s === 'skipped') { status.textContent = 'SKIP'; }
+    else                      { status.textContent = '—'; }
+  },
+
+  updateEgrbLcd(j) {
+    const row    = el('lcd-step-egrb');
+    const fill   = el('lcd-fill-egrb');
+    const status = el('lcd-status-egrb');
+    if (!row) return;
+
+    row.classList.remove('step-running', 'step-done', 'step-error');
+
+    if (!j || j.status === 'idle') {
+      status.textContent = '—';
+      fill.style.width = '0%';
+      return;
     }
 
-    // Status text
-    if (statusEl) {
-      if (sd.status === 'running') statusEl.textContent = 'Running…';
-      else if (sd.status === 'done') statusEl.textContent = '✓ Done';
-      else if (sd.status === 'error') statusEl.textContent = `✗ Error (rc=${sd.rc})`;
-      else statusEl.textContent = '';
+    const pct    = j.total > 0 ? Math.round(100 * j.epoch / j.total) : 0;
+    fill.style.width = pct + '%';
+    const lossStr = j.loss != null ? `  ${j.loss.toFixed(3)}` : '';
+    const phStr   = j.phase ? ` [${j.phase.replace('phase', 'p')}]` : '';
+
+    if (j.active) {
+      row.classList.add('step-running');
+      status.textContent = `${j.epoch}/${j.total}${phStr}${lossStr}`;
+    } else if (j.epoch > 0) {
+      row.classList.add('step-done');
+      status.textContent = `${j.epoch}/${j.total}${phStr} OK`;
+    } else {
+      status.textContent = '—';
     }
+  },
 
-    // Log
-    if (logEl && sd.log_lines && sd.log_lines.length > 0) {
-      logEl.classList.remove('hidden');
-      logEl.textContent = sd.log_lines.join('\n');
-      logEl.scrollTop = logEl.scrollHeight;
-    }
+  pollEgrb() {
+    fetch('/api/pipeline/egrb_status')
+      .then(r => r.json())
+      .then(j => Pipeline.updateEgrbLcd(j))
+      .catch(() => {});
+  },
+};
 
-    // LCD right side
-    updateLcdStep(step, sd);
-  });
+// ══════════════════════════════════════════════════════════════════════════════
+// Generate component
+// ══════════════════════════════════════════════════════════════════════════════
+const Generate = {
+  jobRunning: false,
+  pollTimer: null,
 
-  // Global status
-  const statusEl = el('pipe-status');
-  const cancelBtn = el('btn-pipe-cancel');
-  const allBtn = el('btn-pipe-all');
-  const applyBtn = el('btn-pipe-apply');
+  init() {
+    Generate.initVelToggles();
+    Generate.updateGenCmd();
 
-  if (j.status === 'running') {
-    cancelBtn.classList.remove('hidden');
-    allBtn.classList.add('hidden');
-    applyBtn.classList.add('hidden');
-    statusEl.textContent = `Running: ${j.step || ''}…`;
-  } else if (j.status === 'done') {
-    cancelBtn.classList.add('hidden');
-    allBtn.classList.remove('hidden');
-    applyBtn.classList.remove('hidden');
-    statusEl.textContent = '✓ Pipeline complete';
-    clearInterval(pipePollTimer); pipePollTimer = null;
-  } else if (j.status === 'error') {
-    cancelBtn.classList.add('hidden');
-    allBtn.classList.remove('hidden');
-    statusEl.textContent = `✗ ${j.error || 'Error'}`;
-    clearInterval(pipePollTimer); pipePollTimer = null;
-  } else if (j.status === 'cancelled') {
-    cancelBtn.classList.add('hidden');
-    allBtn.classList.remove('hidden');
-    statusEl.textContent = 'Cancelled';
-    clearInterval(pipePollTimer); pipePollTimer = null;
-  }
+    // Update CMD preview on range/velocity/params changes
+    ['gen-from', 'gen-to', 'gen-params-file'].forEach(id => {
+      el(id)?.addEventListener('input',  () => Generate.updateGenCmd());
+      el(id)?.addEventListener('change', () => Generate.updateGenCmd());
+    });
+    el('vel-toggles')?.addEventListener('change', () => Generate.updateGenCmd());
 
-  // Enable individual step buttons when not running
-  PIPE_STEPS.forEach(step => {
-    const btn = el(`btn-pipe-${step}`);
-    if (btn) btn.disabled = (j.status === 'running');
-  });
-  allBtn.disabled = (j.status === 'running');
-}
+    el('btn-generate').addEventListener('click', async () => {
+      if (!Session.name) return;
+      // Auto-save config before generating
+      try {
+        await API.sessions(`/${Session.name}/config`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            render:               Session.config.render,
+            timbre:               Session.config.timbre,
+            stereo:               Session.config.stereo,
+            velocity_rms_profile: Session.config.velocity_rms_profile,
+          }),
+        });
+      } catch (err) {
+        el('gen-status').textContent = 'Config save error: ' + err.message;
+        return;
+      }
 
-async function pollPipelineStatus() {
-  try {
-    const j = await fetch(PIPE_API('/status')).then(r => r.json());
-    updatePipelineUI(j);
-    if (j.status !== 'running') {
-      clearInterval(pipePollTimer);
-      pipePollTimer = null;
-    }
-  } catch { /* ignore */ }
-}
-
-function startPipelineRun(fromStep) {
-  const body = {
-    wav_dir:   el('pipe-wav-dir').value.trim(),
-    out:       el('pipe-out').value.trim(),
-    epochs:    parseInt(el('pipe-epochs').value),
-    workers:   parseInt(el('pipe-workers').value),
-    from_step: fromStep,
-  };
-  fetch(PIPE_API('/run'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(res => {
-    if (!res.ok) return res.json().then(e => { throw new Error(e.detail || res.statusText); });
-    el('btn-pipe-all').classList.add('hidden');
-    el('btn-pipe-cancel').classList.remove('hidden');
-    el('btn-pipe-apply').classList.add('hidden');
-    el('pipe-status').textContent = `Starting ${fromStep}…`;
-    // Reset LCD for affected steps
-    const fromIdx = PIPE_STEPS.indexOf(fromStep);
-    PIPE_STEPS.forEach((step, i) => {
-      if (i >= fromIdx) {
-        el(`lcd-fill-${step}`).style.width = '0%';
-        el(`lcd-status-${step}`).textContent = '…';
-        el(`lcd-step-${step}`).className = 'lcd-step-row';
+      const paramsOverride = el('gen-params-file')?.value.trim() || '';
+      const body = {
+        midi_from:   parseInt(el('gen-from').value),
+        midi_to:     parseInt(el('gen-to').value),
+        vel_layers:  Generate.selectedVelocities(),
+        params_file: paramsOverride,
+      };
+      try {
+        await API.sessions(`/${Session.name}/generate`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        Generate.jobRunning = true;
+        el('btn-generate').classList.add('hidden');
+        el('btn-gen-cancel').classList.remove('hidden');
+        el('progress-wrap').classList.remove('hidden');
+        el('gen-status').textContent = 'Starting…';
+        Generate.startPolling();
+      } catch (err) {
+        el('gen-status').textContent = 'Error: ' + err.message;
       }
     });
-    if (!pipePollTimer) pipePollTimer = setInterval(pollPipelineStatus, 900);
-  }).catch(e => {
-    el('pipe-status').textContent = 'Error: ' + e.message;
-  });
-}
 
-el('btn-pipe-all').addEventListener('click', () => startPipelineRun('extract'));
-el('btn-pipe-extract').addEventListener('click', () => startPipelineRun('extract'));
-el('btn-pipe-eq').addEventListener('click', () => startPipelineRun('eq'));
-el('btn-pipe-train').addEventListener('click', () => startPipelineRun('train'));
+    el('btn-gen-cancel').addEventListener('click', async () => {
+      if (!Session.name) return;
+      await API.sessions(`/${Session.name}/generate/cancel`, { method: 'POST' }).catch(() => {});
+    });
+  },
 
-el('btn-pipe-cancel').addEventListener('click', () => {
-  fetch(PIPE_API('/cancel'), { method: 'POST' }).catch(() => {});
-  el('pipe-status').textContent = 'Cancelling…';
-});
+  initVelToggles() {
+    const wrap = el('vel-toggles');
+    wrap.innerHTML = '';
 
-el('btn-pipe-apply').addEventListener('click', async () => {
-  if (!state.session) {
-    el('pipe-status').textContent = 'Select a session first.';
-    return;
-  }
-  try {
-    const res = await fetch(PIPE_API(`/apply/${state.session}`), { method: 'POST' });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
-    const data = await res.json();
-    el('btn-pipe-apply').classList.add('hidden');
-    const prof = data.vel_profile || {};
-    const summary = Object.entries(prof).map(([v, r]) => `v${v}=${r}`).join(' ');
-    el('pipe-status').textContent = `✓ Applied — vel: ${summary}`;
-    await reloadConfig();
-    renderVelProfileSliders();
-  } catch (e) {
-    el('pipe-status').textContent = 'Apply error: ' + e.message;
-  }
-});
+    // ALL toggle
+    const allLabel = document.createElement('label');
+    allLabel.className = 'vel-toggle switch';
 
-// ── Init ─────────────────────────────────────────────────────────────────────
-initVelCheckboxes();
-loadSessions();
-// Poll pipeline status on load to restore any in-progress state
-fetch(PIPE_API('/status')).then(r => r.json()).then(j => {
-  if (j.status === 'running') {
-    el('btn-pipe-all').classList.add('hidden');
-    el('btn-pipe-cancel').classList.remove('hidden');
-    pipePollTimer = setInterval(pollPipelineStatus, 900);
-  }
-  updatePipelineUI(j);
-}).catch(() => {});
+    const allCb = document.createElement('input');
+    allCb.type    = 'checkbox';
+    allCb.id      = 'vel-all';
+    allCb.value   = 'all';
+    allCb.checked = true;
 
-// Note name update on midi input
-el('note-midi').addEventListener('input', () => {
-  el('note-name-display').textContent = midiToName(parseInt(el('note-midi').value) || 45);
+    const allToggle = document.createElement('div');
+    allToggle.className = 'toggle green';
+
+    const allText = document.createElement('span');
+    allText.className   = 'vel-all-label';
+    allText.textContent = 'ALL';
+
+    allLabel.appendChild(allCb);
+    allLabel.appendChild(allToggle);
+    allLabel.appendChild(allText);
+    wrap.appendChild(allLabel);
+
+    allCb.addEventListener('change', () => {
+      wrap.querySelectorAll('input[type="checkbox"]:not(#vel-all)').forEach(cb => {
+        cb.checked = allCb.checked;
+      });
+    });
+
+    // Per-velocity toggles 0-7
+    for (let v = 0; v <= 7; v++) {
+      const label = document.createElement('label');
+      label.className = 'vel-toggle switch';
+
+      const cb = document.createElement('input');
+      cb.type    = 'checkbox';
+      cb.value   = v;
+      cb.id      = `vel-${v}`;
+      cb.checked = true;
+
+      const toggle = document.createElement('div');
+      toggle.className = 'toggle green';
+
+      const num = document.createElement('span');
+      num.className   = 'vel-num';
+      num.textContent = v;
+
+      label.appendChild(cb);
+      label.appendChild(toggle);
+      label.appendChild(num);
+      wrap.appendChild(label);
+
+      cb.addEventListener('change', () => {
+        const all = wrap.querySelectorAll('input[type="checkbox"]:not(#vel-all)');
+        allCb.checked = Array.from(all).every(c => c.checked);
+      });
+    }
+  },
+
+  selectedVelocities() {
+    return Array.from(
+      document.querySelectorAll('#vel-toggles input[type="checkbox"]:not(#vel-all):checked')
+    ).map(cb => parseInt(cb.value, 10));
+  },
+
+  buildGenCmd() {
+    const session    = Session.name || '<session>';
+    const from       = parseInt(el('gen-from')?.value) || 21;
+    const to         = parseInt(el('gen-to')?.value)   || 108;
+    const vels       = Generate.selectedVelocities();
+    const velStr     = vels.join(' ');
+    const paramsFile = el('gen-params-file')?.value.trim()
+                       || Session.config?.source_params
+                       || `gui/sessions/${session}/params.json`;
+    return [
+      `python -u analysis/generate-samples.py \\`,
+      `    --params  ${paramsFile} \\`,
+      `    --session gui/sessions/${session}/config.json \\`,
+      `    --out-dir gui/sessions/${session}/generated \\`,
+      `    --from ${from} --to ${to} \\`,
+      `    --vel ${velStr}`,
+    ].join('\n');
+  },
+
+  updateGenCmd() {
+    const pre = el('gcmd-generate');
+    if (pre) pre.textContent = Generate.buildGenCmd();
+  },
+
+  startPolling() {
+    if (!Generate.pollTimer) {
+      Generate.pollTimer = setInterval(() => Generate.poll(), 800);
+    }
+  },
+
+  stopPolling() {
+    if (Generate.pollTimer) {
+      clearInterval(Generate.pollTimer);
+      Generate.pollTimer = null;
+    }
+  },
+
+  async poll() {
+    if (!Session.name) return;
+
+    // Config sync (picks up external changes)
+    try {
+      const data = await API.sessions(`/${Session.name}/config`);
+      Session.config = data.config;
+      Params.renderAllGroups();
+      syncAllDials();
+    } catch { /* ignore */ }
+
+    if (!Generate.jobRunning) return;
+
+    try {
+      const status = await API.sessions(`/${Session.name}/generate/status`);
+      if (!status || status.status === 'idle') return;
+
+      el('progress-fill').style.width  = (status.progress_pct || 0) + '%';
+      el('progress-label').textContent = `${status.done} / ${status.total}`;
+      el('gen-status').textContent     = status.last_file ? `Last: ${status.last_file}` : '';
+
+      if (status.status === 'done' || status.status === 'cancelled') {
+        Generate.jobRunning = false;
+        el('btn-generate').classList.remove('hidden');
+        el('btn-gen-cancel').classList.add('hidden');
+        const errs = (status.errors || []).length;
+        el('gen-status').textContent = `${status.status} — ${status.done} files${errs ? `, ${errs} errors` : ''}`;
+        await Player.loadFiles();
+      }
+    } catch { /* ignore */ }
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Player component
+// ══════════════════════════════════════════════════════════════════════════════
+const Player = {
+  currentFile: null,
+
+  init() {
+    // Nothing to bind at init time — file items are created dynamically
+  },
+
+  async loadFiles() {
+    if (!Session.name) return;
+    const data = await API.sessions(`/${Session.name}/files`).catch(() => ({ files: [] }));
+    const container = el('file-list');
+    container.innerHTML = '';
+    (data.files || []).forEach(f => {
+      const item = document.createElement('div');
+      item.className = 'file-item' + (Player.currentFile === f.filename ? ' active' : '');
+      item.innerHTML = `<span class="file-name">${f.filename}</span><span class="file-size">${f.size_kb} KB</span>`;
+      item.addEventListener('click', () => Player.play(f));
+      container.appendChild(item);
+    });
+  },
+
+  play(f) {
+    Player.currentFile = f.filename;
+    el('lcd-playing').textContent = f.filename;
+    const audio = el('audio-player');
+    audio.src = f.url;
+    audio.play();
+    Player.loadSpectrum(f.filename);
+    document.querySelectorAll('.file-item').forEach(item => {
+      item.classList.toggle('active', item.querySelector('.file-name').textContent === f.filename);
+    });
+  },
+
+  async loadSpectrum(filename) {
+    el('spectrum-status').textContent = 'Computing spectrum…';
+    try {
+      const data = await API.sessions(`/${Session.name}/spectrum/${filename}`);
+      Player.drawSpectrum(data.freqs, data.magnitudes_db);
+      el('spectrum-status').textContent = `${data.duration_s}s · ${data.sr} Hz`;
+    } catch (err) {
+      el('spectrum-status').textContent = 'Spectrum error: ' + err.message;
+    }
+  },
+
+  drawSpectrum(freqs, db) {
+    const canvas = el('spectrum-canvas');
+    const ctx    = canvas.getContext('2d');
+    const W = canvas.width;
+    const H = canvas.height;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#001200';
+    ctx.fillRect(0, 0, W, H);
+
+    const dbPeak  = Math.max(...db);
+    const dbMax   = Math.ceil(dbPeak / 10) * 10;
+    const dbMin   = -80;
+    const dbRange = dbMax - dbMin;
+
+    // dB grid lines
+    ctx.lineWidth = 1;
+    for (let d = dbMin; d <= dbMax; d += 10) {
+      const y = H - ((d - dbMin) / dbRange) * H;
+      ctx.strokeStyle = d === 0 ? '#1a5a1a' : '#0a2a0a';
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      ctx.fillStyle = d % 20 === 0 ? '#00aa44aa' : '#006622aa';
+      ctx.font = '9px monospace';
+      ctx.fillText(d + 'dB', 2, y - 2);
+    }
+
+    // Spectrum curve
+    const nPts = db.length;
+    ctx.beginPath();
+    ctx.strokeStyle = '#00ff77';
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = '#00ff7788';
+    ctx.shadowBlur  = 4;
+
+    for (let i = 0; i < nPts; i++) {
+      const x = (i / (nPts - 1)) * W;
+      const y = H - ((db[i] - dbMin) / dbRange) * H;
+      if (i === 0) ctx.moveTo(x, y);
+      else         ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Fill under curve
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+    ctx.fillStyle = 'rgba(0,255,119,0.06)';
+    ctx.fill();
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Init — ALL event listeners attached inside DOMContentLoaded
+// ══════════════════════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', async () => {
+  Session.init();
+  Params.init();
+  Pipeline.init();
+  Generate.init();
+  Player.init();
+
+  await Session.loadList();
 });
