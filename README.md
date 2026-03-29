@@ -341,7 +341,7 @@ Výstup `params.json` obsahuje pro každý soubor:
 
 ### 4. Spektrální EQ (volitelné, doporučeno)
 
-Porovná LTASE (long-term average spectral envelope) originálu vs. syntézy a uloží
+Porovná LTASE (Long-Time Average Spectral Envelope) originálu vs. syntézy a uloží
 korekční filtr per nota → přidá přirozenou barvu těla nástroje.
 
 ```bash
@@ -349,6 +349,51 @@ python analysis/compute_spectral_eq.py \
     --params analysis/params.json \
     --bank   C:/SoundBanks/MujNastroj
 ```
+
+#### Metoda: LTASE korekce
+
+```
+orig WAV  ──→  LTASE_orig(f)  ──┐
+                                 ├──→  H(f) = LTASE_orig / LTASE_synth  ──→  EQ [dB]
+synth WAV ──→  LTASE_synth(f) ──┘
+```
+
+1. **LTASE** = průměr amplitudových spekter přes všechny STFT rámce (N_FFT=8192, hop=2048)
+2. **Poměr H(f)** s regularizací (ε = 0.1 % peaku) zabraňuje dělení nulou
+3. **1/6-oktávové Gaussovo vyhlazení** eliminuje artefakty jednotlivých harmonických
+4. **Normalizace** na 0 dB průměr nad 100 Hz — jen tvar, ne absolutní úroveň
+5. **Převzorkování** na 64 logaritmicky rozmístěných bodů (20 Hz – 20 kHz)
+6. Navíc se měří **`stereo_width_factor`** = M/S poměr originálu vs. syntézy (přeskočí prvních 100 ms útoku)
+
+**Co EQ zachycuje:** rezonance těla nástroje, spektrální rolloff kobylky, mikrofonní charakteristiku, pohltivost strun.
+
+#### Nyquistův teorém
+
+`rfft` pokrývá přesně 0 – SR/2 = **22 050 Hz**. Aliasing v STFT výpočtu nevzniká.
+
+#### Rozlišení okna vs. frekvence
+
+Fixní N_FFT = 8192 dává rozlišení **5.38 Hz/bin** pro všechny noty:
+
+| Nota | f₀ (Hz) | Binů/harmonická | Šířka 1/6-okt. okna (Hz) | Binů v okně |
+|------|---------|-----------------|--------------------------|-------------|
+| A0   | 27.5    | 5.1             | 3.2                      | **0.6** ⚠️ |
+| E1   | 41.2    | 7.7             | 4.8                      | **0.9** ⚠️ |
+| E2   | 82.4    | 15.3            | 9.5                      | 1.8         |
+| C4   | 261.6   | 48.6            | 30.2                     | 5.6 ✓       |
+| C6   | 1046.5  | 194.4           | 121.0                    | 22.5 ✓      |
+
+**Basová omezení:** Pro noty pod ~E2 (MIDI < 40) má 1/6-oktávové vyhlazení méně než 2 biny —
+vyhlazení je prakticky nefunkční. LTASE bude pro tyto noty "zrnitá" a náchylná na spektrální
+leakage mezi sousedními harmonickými.
+
+**Proč to nevadí v praxi:**
+Parametr `eq_freq_min = 400 Hz` (výchozí v GUI) způsobuje, že EQ pod 400 Hz lineárně
+klesá na 0 dB — basové nepřesnosti jsou tedy potlačeny dříve, než se dostanou do syntézy.
+Tělo nástroje navíc dominantně tvaruje středy a výšky; basové fundamenty procházejí přímo strukturou nástroje bez výraznější selektivní rezonance.
+
+**Potenciální zlepšení:** Adaptivní N_FFT podle f₀ (jako v `extract_params.py`) by zlepšilo
+přesnost pro basy, ale s `eq_freq_min` je přínos marginální.
 
 ---
 
