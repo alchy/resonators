@@ -217,11 +217,34 @@ def _compute_vel_profile(params_path: Path) -> dict:
 
     ref = mean_e.get(7, 0.0)
     if ref < 1e-9:
-        # Fallback to gamma curve
+        # Fallback to gamma curve if no data at all
         gamma = 0.7
         return {str(v): round(((v + 1) / 8.0) ** gamma, 4) for v in range(8)}
 
-    return {str(v): round(mean_e[v] / ref, 4) for v in range(8)}
+    # Normalise
+    raw = {v: mean_e[v] / ref for v in range(8)}
+
+    # Interpolate missing velocity layers linearly from neighbours
+    known = {v: raw[v] for v in range(8) if mean_e[v] > 1e-9}
+    if len(known) < 2:
+        gamma = 0.7
+        return {str(v): round(((v + 1) / 8.0) ** gamma, 4) for v in range(8)}
+
+    keys = sorted(known)
+    for v in range(8):
+        if v not in known:
+            # find nearest lower and upper known key
+            lo = max((k for k in keys if k < v), default=None)
+            hi = min((k for k in keys if k > v), default=None)
+            if lo is None:
+                raw[v] = known[hi]
+            elif hi is None:
+                raw[v] = known[lo]
+            else:
+                t = (v - lo) / (hi - lo)
+                raw[v] = known[lo] + t * (known[hi] - known[lo])
+
+    return {str(v): round(raw[v], 4) for v in range(8)}
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
