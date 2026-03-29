@@ -193,16 +193,24 @@ def _run_pipeline(req: PipelineRequest) -> None:
                    "--bank", req.wav_dir,
                    "--workers", str(req.workers)]
         else:  # train — e2e SetterNN training
+            # Derive instrument-specific checkpoint dir from params filename
+            # e.g. analysis/params-salamander.json → checkpoints/e2e-salamander
+            e2e_out = req.e2e_out
+            if e2e_out in ("checkpoints/e2e", "checkpoints\\e2e"):
+                stem = Path(req.params_out).stem          # "params-salamander"
+                instr = stem.replace("params-", "").replace("params_", "")
+                if instr:
+                    e2e_out = f"checkpoints/e2e-{instr}"
             cmd = [PYTHON, "-u", "train_e2e.py",
                    "--config",  req.e2e_config,
                    "--params",  req.params_out,
                    "--bank",    req.wav_dir,
-                   "--out",     req.e2e_out]
-            best_pt = Path(req.e2e_out) / "best.pt"
+                   "--out",     e2e_out]
+            best_pt = Path(e2e_out) / "best.pt"
             if best_pt.exists():
                 cmd += ["--resume", str(best_pt)]
                 log.info(f"Pipeline [train]: resuming from {best_pt}")
-            job["e2e_out"] = req.e2e_out
+            job["e2e_out"] = e2e_out
 
         log.info(f"Pipeline [{step}]: {' '.join(cmd)}")
         _stream_subprocess(cmd, step_state, job)
