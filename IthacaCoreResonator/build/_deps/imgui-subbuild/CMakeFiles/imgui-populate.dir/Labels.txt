@@ -1,0 +1,14 @@
+# Target labels
+ imgui-populate
+# Source files and their labels
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/imgui-populate
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/5a59e4a356b3da13ce4ff3f24172cbff/imgui-populate.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/1e39b1f784c55654ffc67a06689e829f/imgui-populate-complete.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/3b7870ba1b2a325499337984dd525d0b/imgui-populate-build.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/3b7870ba1b2a325499337984dd525d0b/imgui-populate-configure.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/3b7870ba1b2a325499337984dd525d0b/imgui-populate-download.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/3b7870ba1b2a325499337984dd525d0b/imgui-populate-install.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/3b7870ba1b2a325499337984dd525d0b/imgui-populate-mkdir.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/3b7870ba1b2a325499337984dd525d0b/imgui-populate-patch.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/3b7870ba1b2a325499337984dd525d0b/imgui-populate-test.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/3b7870ba1b2a325499337984dd525d0b/imgui-populate-update.rule

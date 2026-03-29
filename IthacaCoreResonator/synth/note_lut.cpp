@@ -81,7 +81,8 @@ static NoteParams parseSample(const json& s) {
     if (s.contains("noise") && s["noise"].is_object()) {
         const auto& n = s["noise"];
         p.noise.attack_tau_s         = get_f(n, "attack_tau_s",         0.05f);
-        p.noise.floor_rms            = get_f(n, "floor_rms",            0.f);
+        // Python stores amplitude as "A_noise"; fall back to "floor_rms" for compatibility
+        p.noise.floor_rms            = get_f(n, "A_noise", get_f(n, "floor_rms", 0.06f));
         p.noise.centroid_hz          = get_f(n, "centroid_hz",          2000.f);
         p.noise.spectral_slope_db_oct= get_f(n, "spectral_slope_db_oct",-12.f);
     }
@@ -170,4 +171,50 @@ const NoteParams& lookupNote(const NoteLUT& lut, int midi, int vel) {
     }
 
     return kEmptyNote;
+}
+
+// ── Public: interpolateNoteLayers ─────────────────────────────────────────────
+// Continuous velocity: MIDI 0–127 → vel_pos 0.0–7.0, blends adjacent layers.
+// Smoothly interpolates A0, decay times, beat, EQ, noise between layers.
+
+NoteParams interpolateNoteLayers(const NoteLUT& lut, int midi, float vel_pos) {
+    vel_pos = std::max(0.f, std::min((float)(VEL_LAYERS - 1), vel_pos));
+    int   lo = (int)vel_pos;
+    int   hi = std::min(lo + 1, VEL_LAYERS - 1);
+    float t  = vel_pos - (float)lo;  // blend factor [0,1)
+
+    const NoteParams& a = lookupNote(lut, midi, lo);
+    if (hi == lo || t < 1e-4f) return a;
+    const NoteParams& b = lookupNote(lut, midi, hi);
+    if (!b.valid) return a;
+
+    NoteParams p = a;   // copy lower layer; selectively blend fields
+
+    // Partials: interpolate physics params, keep discrete fields from lower layer
+    int n = std::min(a.n_partials, b.n_partials);
+    p.n_partials = n;
+    for (int k = 0; k < n; k++) {
+        const PartialParams& pa = a.partials[k];
+        const PartialParams& pb = b.partials[k];
+        PartialParams& pp = p.partials[k];
+        pp.A0      = pa.A0      + t * (pb.A0      - pa.A0);
+        pp.f_hz    = pa.f_hz    + t * (pb.f_hz    - pa.f_hz);
+        pp.tau1    = pa.tau1    + t * (pb.tau1    - pa.tau1);
+        pp.tau2    = pa.tau2    + t * (pb.tau2    - pa.tau2);
+        pp.a1      = pa.a1      + t * (pb.a1      - pa.a1);
+        pp.beat_hz = pa.beat_hz + t * (pb.beat_hz - pa.beat_hz);
+        // mono and k are discrete — keep from lower layer (pa)
+    }
+
+    // Noise
+    p.noise.attack_tau_s = a.noise.attack_tau_s + t * (b.noise.attack_tau_s - a.noise.attack_tau_s);
+    p.noise.floor_rms    = a.noise.floor_rms    + t * (b.noise.floor_rms    - a.noise.floor_rms);
+    p.noise.centroid_hz  = a.noise.centroid_hz  + t * (b.noise.centroid_hz  - a.noise.centroid_hz);
+
+    // Spectral EQ and stereo width
+    p.width_factor = a.width_factor + t * (b.width_factor - a.width_factor);
+    for (int i = 0; i < EQ_POINTS; i++)
+        p.eq_gains_db[i] = a.eq_gains_db[i] + t * (b.eq_gains_db[i] - a.eq_gains_db[i]);
+
+    return p;
 }

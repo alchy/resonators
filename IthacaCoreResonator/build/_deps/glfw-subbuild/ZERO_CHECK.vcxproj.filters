@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\glfw-subbuild\CMakeFiles\6413aebe4b83f538ade273b2f29dd733\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{F5DA7322-8C0A-3D26-B079-D47F4D3FBB7F}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

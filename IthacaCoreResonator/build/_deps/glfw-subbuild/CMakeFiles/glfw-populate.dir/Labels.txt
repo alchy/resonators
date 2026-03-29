@@ -1,0 +1,14 @@
+# Target labels
+ glfw-populate
+# Source files and their labels
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/glfw-populate
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/6413aebe4b83f538ade273b2f29dd733/glfw-populate.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/c08f3b3f61eb42804e2c3d9432083371/glfw-populate-complete.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/6c501243301fed05baf829d633fdbad5/glfw-populate-build.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/6c501243301fed05baf829d633fdbad5/glfw-populate-configure.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/6c501243301fed05baf829d633fdbad5/glfw-populate-download.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/6c501243301fed05baf829d633fdbad5/glfw-populate-install.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/6c501243301fed05baf829d633fdbad5/glfw-populate-mkdir.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/6c501243301fed05baf829d633fdbad5/glfw-populate-patch.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/6c501243301fed05baf829d633fdbad5/glfw-populate-test.rule
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-subbuild/CMakeFiles/6c501243301fed05baf829d633fdbad5/glfw-populate-update.rule

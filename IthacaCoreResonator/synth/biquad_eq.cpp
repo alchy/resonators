@@ -64,11 +64,22 @@ static float interpGain(const float* freqs, const float* gains, int n, float fc)
 
 void BiquadEQ::design(const float eq_freqs_hz[EQ_POINTS],
                       const float eq_gains_db[EQ_POINTS],
-                      float sample_rate) {
+                      float sample_rate, float freq_min) {
     for (int b = 0; b < EQ_BANDS; b++) {
-        float fc    = EQ_BAND_FREQS_HZ[b];
-        float gain  = interpGain(eq_freqs_hz, eq_gains_db, EQ_POINTS, fc);
-        // Clamp gain to ±24 dB to avoid filter instability
+        float fc   = EQ_BAND_FREQS_HZ[b];
+        float gain = interpGain(eq_freqs_hz, eq_gains_db, EQ_POINTS, fc);
+
+        // Fade EQ to 0 dB below freq_min to avoid room-acoustics contamination.
+        // Transition: flat below freq_min/2, linear ramp to full gain at freq_min.
+        if (freq_min > 0.f) {
+            float fade_low = freq_min * 0.5f;
+            if (fc < fade_low) {
+                gain = 0.f;
+            } else if (fc < freq_min) {
+                gain *= (fc - fade_low) / (freq_min - fade_low);
+            }
+        }
+
         gain = std::max(-24.f, std::min(24.f, gain));
         coeffs_[b] = designPeaking(fc, gain, /*Q=*/1.4f, sample_rate);
     }

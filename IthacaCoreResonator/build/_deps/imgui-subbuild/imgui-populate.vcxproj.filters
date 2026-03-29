@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\3b7870ba1b2a325499337984dd525d0b\imgui-populate-mkdir.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\3b7870ba1b2a325499337984dd525d0b\imgui-populate-download.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\3b7870ba1b2a325499337984dd525d0b\imgui-populate-update.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\3b7870ba1b2a325499337984dd525d0b\imgui-populate-patch.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\3b7870ba1b2a325499337984dd525d0b\imgui-populate-configure.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\3b7870ba1b2a325499337984dd525d0b\imgui-populate-build.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\3b7870ba1b2a325499337984dd525d0b\imgui-populate-install.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\3b7870ba1b2a325499337984dd525d0b\imgui-populate-test.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\1e39b1f784c55654ffc67a06689e829f\imgui-populate-complete.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\5a59e4a356b3da13ce4ff3f24172cbff\imgui-populate.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\imgui-subbuild\CMakeFiles\imgui-populate" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{2894384E-9071-3FC4-99F6-161871B3D4BC}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

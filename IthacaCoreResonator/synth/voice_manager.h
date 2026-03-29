@@ -117,9 +117,8 @@ public:
 
     // Output peak level (linear, after full DSP chain). -20 dB/s decay.
     // Thread-safe: written by audio thread, read by GUI thread.
-    float getOutputPeakLin() const noexcept {
-        return output_peak_lin_.load(std::memory_order_relaxed);
-    }
+    float    getOutputPeakLin()  const noexcept { return output_peak_lin_.load(std::memory_order_relaxed); }
+    uint32_t getLastNoteSeed()   const noexcept { return last_note_seed_ .load(std::memory_order_relaxed); }
 
     // ── Synthesis rendering config (mirrors physics_synth.py kwargs) ──────────
     // Changes take effect on next noteOn.
@@ -209,6 +208,9 @@ private:
     std::vector<float> tmp_r_;
 
     // Peak metering (written by audio thread, read by GUI)
-    std::atomic<float> output_peak_lin_{0.f};
-    float              peak_decay_coeff_ = 0.9878f;  // recomputed in prepareToPlay
+    std::atomic<float>    output_peak_lin_{0.f};
+    float                 peak_decay_coeff_ = 0.9878f;  // recomputed in prepareToPlay
+
+    // Seed snapshot of last triggered note (first rand() value from phase init)
+    std::atomic<uint32_t> last_note_seed_{0};
 };

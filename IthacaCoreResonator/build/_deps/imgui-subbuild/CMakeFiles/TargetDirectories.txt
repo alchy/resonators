@@ -1,0 +1,3 @@
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/imgui-populate.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/ALL_BUILD.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/imgui-subbuild/CMakeFiles/ZERO_CHECK.dir

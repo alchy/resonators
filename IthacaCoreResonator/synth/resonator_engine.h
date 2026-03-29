@@ -82,6 +82,7 @@ public:
     // Last note-on (updated on every noteOn call, thread-safe)
     uint8_t  getLastNoteMidi() const { return last_note_midi_.load(std::memory_order_relaxed); }
     uint8_t  getLastNoteVel()  const { return last_note_vel_ .load(std::memory_order_relaxed); }
+    uint32_t getLastNoteSeed() const { return vm_.getLastNoteSeed(); }
 
     // Look up interpolated NoteParams for a (midi, vel) — read-only LUT, safe from GUI thread
     NoteParams lookupNote(int midi, int vel) const { return vm_.lookupNote(midi, vel); }

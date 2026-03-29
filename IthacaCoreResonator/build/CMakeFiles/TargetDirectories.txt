@@ -1,0 +1,13 @@
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/CMakeFiles/IthacaCoreResonator.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/CMakeFiles/IthacaCoreResonatorGUI.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/CMakeFiles/run.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/CMakeFiles/clean-exports.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/CMakeFiles/INSTALL.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/CMakeFiles/ZERO_CHECK.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-build/CMakeFiles/uninstall.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-build/CMakeFiles/INSTALL.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-build/CMakeFiles/ALL_BUILD.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-build/src/CMakeFiles/glfw.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-build/src/CMakeFiles/update_mappings.dir
+C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-build/src/CMakeFiles/INSTALL.dir

@@ -683,6 +683,42 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
             ImGui::BeginChild("##right_panel", {0.f, 0.f}, false,
                               ImGuiWindowFlags_NoScrollbar);
             {
+                // ── Static synthesis constants (hardcoded, not yet in SynthConfig) ─
+                ImGui::SeparatorText("FIXED CONSTANTS");
+                constexpr ImGuiTableFlags fcf =
+                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame;
+                if (ImGui::BeginTable("##fixedconst", 3, fcf)) {
+                    ImGui::TableSetupColumn("ENVELOPE");
+                    ImGui::TableSetupColumn("DECORRELATION");
+                    ImGui::TableSetupColumn("EQ / FILTER");
+                    ImGui::TableHeadersRow();
+                    ImGui::TableNextRow();
+
+                    auto frow = [](const char* name, const char* val, const char* unit) {
+                        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(210,200,140,220));
+                        ImGui::Text("%s", name);
+                        ImGui::PopStyleColor();
+                        ImGui::SameLine(0, 4);
+                        ImGui::Text("%s %s", val, unit);
+                    };
+
+                    ImGui::TableSetColumnIndex(0);
+                    frow("release_ms",   "10.0",  "ms");
+
+                    ImGui::TableSetColumnIndex(1);
+                    frow("ap_base_gain", "0.35",  "");
+                    frow("ap_scale_l",   "0.25",  "L");
+                    frow("ap_scale_r",   "0.20",  "R");
+
+                    ImGui::TableSetColumnIndex(2);
+                    frow("eq_q",         "1.4",   "Q");
+                    frow("eq_gain_clamp","+-24",  "dB");
+
+                    ImGui::EndTable();
+                }
+                ImGui::Spacing();
+                ImGui::Separator();
+
                 // ── SynthConfig — 3 columns by nature ────────────────────────
                 ImGui::SeparatorText("SYNTHESIS PARAMS");
                 constexpr ImGuiTableFlags scf =
@@ -736,9 +772,14 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
                 int   ln_vel  = engine.getLastNoteVel();
                 static const char* nnames[] = {
                     "C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+                uint32_t ln_seed = engine.getLastNoteSeed();
                 ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,220,100,255));
                 ImGui::Text("LAST NOTE  %s%d  (MIDI %d)  vel %d",
                     nnames[ln_midi % 12], ln_midi / 12 - 1, ln_midi, ln_vel);
+                ImGui::PopStyleColor();
+                ImGui::SameLine(0, 16.f);
+                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(180,180,180,200));
+                ImGui::Text("seed  0x%08X  (%u)", ln_seed, ln_seed);
                 ImGui::PopStyleColor();
 
                 NoteParams np = engine.lookupNote(ln_midi, ln_vel);
@@ -789,7 +830,7 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
                         ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY;
                     float row_h = ImGui::GetTextLineHeightWithSpacing();
-                    float tbl_h = std::min((float)np.n_partials + 1.5f, 18.f) * row_h;
+                    float tbl_h = 7.5f * row_h;  // ~7 rows visible, scroll for rest
 
                     if (ImGui::BeginTable("##partials", 8, ptf, {0.f, tbl_h})) {
                         ImGui::TableSetupScrollFreeze(0, 1);

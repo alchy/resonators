@@ -1,0 +1,24 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\CMakeFiles\571c6e3a26914da6c4f31dddd5d4268d\update_mappings.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\glfw-src\src\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\glfw-src\src\mappings.h.in">
+      <Filter>Header Files</Filter>
+    </None>
+    <None Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\glfw-src\CMake\GenerateMappings.cmake" />
+    <None Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\_deps\glfw-build\src\CMakeFiles\update_mappings" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{DE190FBD-279E-3DF4-9072-600A7937A044}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{D79B1BAE-550C-35CB-9913-59F98959F011}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

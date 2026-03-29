@@ -1,0 +1,13 @@
+[INF][main] === IthacaCoreResonatorGUI STARTING ===
+[INF][ResonatorEngine] Initializing...
+[INF][VoiceManager] Loading: C:/Users/jindr/PycharmProjects/resonators/analysis/params-salamander.json
+[INF][VoiceManager] 683 note entries loaded. SR=48000
+[INF][ResonatorEngine] Ready. SR=48000 block=256
+[INF][ResonatorEngine] Audio device started: Speakers/Headphones (Realtek(R) Audio)
+[INF][GUI] Starting GLFW + ImGui
+[MIDI] Opened: loopMIDI Port 0
+[INF][GUI] Auto-connected: loopMIDI Port 0
+[INF][GUI] GUI loop started
+[INF][GUI] GUI shutdown
+[INF][ResonatorEngine] Audio device stopped
+[INF][main] === IthacaCoreResonatorGUI STOPPED ===

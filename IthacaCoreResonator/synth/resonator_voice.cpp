@@ -174,9 +174,12 @@ void ResonatorVoice::noteOn(int midi, int vel,
             omega_[k][s] = TAU * freq / sample_rate;
         }
 
-        // Random initial phases
-        for (int s = 0; s < n_strings_; s++)
-            phase_[k][s] = TAU * (float)std::rand() / (float)RAND_MAX;
+        // Random initial phases — capture first raw value as seed snapshot
+        for (int s = 0; s < n_strings_; s++) {
+            int raw = std::rand();
+            if (k == 0 && s == 0) last_seed_ = (uint32_t)raw;
+            phase_[k][s] = TAU * (float)raw / (float)RAND_MAX;
+        }
     }
 
     // ── Noise state ───────────────────────────────────────────────────────────

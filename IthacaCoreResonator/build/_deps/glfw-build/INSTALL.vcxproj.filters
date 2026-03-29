@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\build\CMakeFiles\957ab81014419ff6c6fa600d7c87eb08\INSTALL_force.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{DE190FBD-279E-3DF4-9072-600A7937A044}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

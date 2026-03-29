@@ -26,9 +26,12 @@ public:
     // Design all bands from the 64-point EQ curve (params.json spectral_eq).
     // Interpolates gain at each band centre, designs RBJ peaking biquads.
     // Call once at note-on.
+    // freq_min: EQ is faded to 0 dB below this frequency (mirrors Python eq_freq_min=400 Hz).
+    // Prevents room-acoustics contamination from LTASE ratio at low frequencies.
     void design(const float eq_freqs_hz[EQ_POINTS],
                 const float eq_gains_db[EQ_POINTS],
-                float sample_rate);
+                float sample_rate,
+                float freq_min = 400.f);
 
     // Reset delay-line state (call at note-on after design).
     void reset();

@@ -1,0 +1,46 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\synth\note_lut.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\synth\resonator_voice.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\synth\voice_manager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\synth\biquad_eq.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\synth\resonator_engine.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\synth\midi_input.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\third_party\RtMidi.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\dsp\dsp_chain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\dsp\limiter\limiter.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\dsp\bbe\bbe.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\jindr\PycharmProjects\resonators\IthacaCoreResonator\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{EE9A6BB5-B611-3338-BA79-531686A8A828}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

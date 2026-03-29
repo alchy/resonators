@@ -62,6 +62,10 @@ void ResonatorVoiceManager::prepareToPlay(int max_block_size) {
     tmp_l_.assign(max_block_size, 0.f);
     tmp_r_.assign(max_block_size, 0.f);
     dsp_chain_.prepare(sample_rate_, max_block_size);
+
+    // Peak meter decay: -20 dB/s.  coeff = 10^(-1 / blocks_per_sec)
+    float blocks_per_sec = sample_rate_ / (float)max_block_size;
+    peak_decay_coeff_ = std::pow(10.f, -1.f / blocks_per_sec);
 }
 
 // ── MIDI note control ─────────────────────────────────────────────────────────
@@ -93,13 +97,15 @@ void ResonatorVoiceManager::setSustainPedalMIDI(bool down) noexcept {
 }
 
 void ResonatorVoiceManager::handleNoteOn(uint8_t midi, uint8_t vel) noexcept {
-    int vel_layer = std::min(VEL_LAYERS - 1, (int)vel * VEL_LAYERS / 128);
-    const NoteParams& p = lookupNote(lut_, (int)midi, vel_layer);
+    // Map MIDI 0–127 to float position 0.0–7.0 in velocity layer space.
+    // interpolateNoteLayers blends adjacent layers for smooth velocity response.
+    float vel_pos = (float)vel * (VEL_LAYERS - 1.f) / 127.f;
+    NoteParams p  = interpolateNoteLayers(lut_, (int)midi, vel_pos);
     if (!p.valid) return;
 
-    // Scale A0 by master gain and velocity
-    // (NoteParams are const — voice applies master_gain_ in processBlock)
-    voices_[midi - MIDI_MIN].noteOn((int)midi, vel_layer, p, sample_rate_);
+    // Pass raw MIDI velocity so voice applies vel_gamma amplitude curve.
+    voices_[midi - MIDI_MIN].noteOn((int)midi, (int)vel, p, sample_rate_, synth_cfg_);
+    last_note_seed_.store(voices_[midi - MIDI_MIN].getLastSeed(), std::memory_order_relaxed);
 }
 
 void ResonatorVoiceManager::handleNoteOff(uint8_t midi) noexcept {
@@ -152,6 +158,19 @@ void ResonatorVoiceManager::finalizeBlock(float* out_l, float* out_r,
                                            int n) noexcept {
     applyLfoPanToFinalMix(out_l, out_r, n);
     dsp_chain_.process(out_l, out_r, n);
+
+    // Peak metering — after full DSP chain, immediate attack, -20 dB/s decay
+    float block_peak = 0.f;
+    for (int i = 0; i < n; i++) {
+        float s = std::abs(out_l[i]);
+        if (s > block_peak) block_peak = s;
+        s = std::abs(out_r[i]);
+        if (s > block_peak) block_peak = s;
+    }
+    float prev   = output_peak_lin_.load(std::memory_order_relaxed);
+    float decayed = prev * peak_decay_coeff_;
+    output_peak_lin_.store(block_peak > decayed ? block_peak : decayed,
+                            std::memory_order_relaxed);
 }
 
 bool ResonatorVoiceManager::processBlockInterleaved(float* out, int n) noexcept {
