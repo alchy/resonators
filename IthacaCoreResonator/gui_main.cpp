@@ -19,7 +19,7 @@ int main(int argc, char* argv[]) {
 
     const std::string params_json = (argc > 1)
         ? argv[1]
-        : "../analysis/params-salamander.json";
+        : "../soundbanks/salamander.json";
 
     try {
         Logger logger;
