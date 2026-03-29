@@ -328,115 +328,143 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
 
         // ── 2×2 controller matrix ─────────────────────────────────────────────
         DspChain* dsp = engine.getDspChain();
+
+        // Helper: draw one labeled slider with description line below
+        // Returns true if value changed.
+        auto labeledSlider = [](const char* id, const char* label,
+                                const char* desc, int* val, int lo, int hi) -> bool {
+            ImGui::Text("%s", label);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(-1);
+            bool changed = ImGui::SliderInt(id, val, lo, hi);
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(140,140,140,255));
+            ImGui::TextUnformatted(desc);
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+            return changed;
+        };
+
         constexpr ImGuiTableFlags tflags =
+            ImGuiTableFlags_BordersOuter |
             ImGuiTableFlags_BordersInnerV |
             ImGuiTableFlags_SizingStretchSame |
             ImGuiTableFlags_PadOuterX;
 
-        if (ImGui::BeginTable("ctrl_matrix", 4, tflags)) {
-            ImGui::TableSetupColumn("MIX",     ImGuiTableColumnFlags_None);
-            ImGui::TableSetupColumn("LFO PAN", ImGuiTableColumnFlags_None);
-            ImGui::TableSetupColumn("LIMITER", ImGuiTableColumnFlags_None);
-            ImGui::TableSetupColumn("BBE",     ImGuiTableColumnFlags_None);
-            ImGui::TableHeadersRow();
+        if (ImGui::BeginTable("ctrl_matrix", 2, tflags)) {
             ImGui::TableNextRow();
 
-            // ── MIX ──────────────────────────────────────────────────────────
+            // ╔══════════════════╗  ╔══════════════════╗
+            // ║      MIX         ║  ║     LFO PAN      ║
+            // ╚══════════════════╝  ╚══════════════════╝
+
             ImGui::TableSetColumnIndex(0);
+            ImGui::SeparatorText("MIX");
             {
                 int v = gs.master_gain;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Gain##mix", &v, 0, 127)) {
+                char desc[48];
+                snprintf(desc, sizeof(desc), "Output level: %d / 127", gs.master_gain);
+                if (labeledSlider("##gain", "Gain", desc, &v, 0, 127)) {
                     gs.master_gain = (uint8_t)v;
                     engine.setAllVoicesMasterGain(gs.master_gain);
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Master Gain");
             }
             {
                 int v = gs.pan;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Pan##mix", &v, 0, 127)) {
+                char desc[48];
+                float pan_pct = (gs.pan - 64) / 64.f;
+                if (std::abs(pan_pct) < 0.02f)
+                    snprintf(desc, sizeof(desc), "Stereo balance: center");
+                else
+                    snprintf(desc, sizeof(desc), "Stereo balance: %.0f%% %s",
+                        std::abs(pan_pct)*100.f, pan_pct < 0 ? "L" : "R");
+                if (labeledSlider("##pan", "Pan ", desc, &v, 0, 127)) {
                     gs.pan = (uint8_t)v;
                     engine.setAllVoicesPan(gs.pan);
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Pan  (64 = centre)");
             }
 
-            // ── LFO PAN ───────────────────────────────────────────────────────
             ImGui::TableSetColumnIndex(1);
+            ImGui::SeparatorText("LFO PAN");
             {
                 int v = gs.lfo_speed;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Speed##lfo", &v, 0, 127)) {
+                char desc[48];
+                snprintf(desc, sizeof(desc), "Rotation rate: %.2f Hz",
+                    2.f * (gs.lfo_speed / 127.f));
+                if (labeledSlider("##lfospd", "Speed", desc, &v, 0, 127)) {
                     gs.lfo_speed = (uint8_t)v;
                     engine.setAllVoicesPanSpeed(gs.lfo_speed);
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("LFO speed: %.2f Hz", 2.f*(gs.lfo_speed/127.f));
             }
             {
                 int v = gs.lfo_depth;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Depth##lfo", &v, 0, 127)) {
+                char desc[48];
+                snprintf(desc, sizeof(desc), "Sweep width: %.0f%%",
+                    100.f * (gs.lfo_depth / 127.f));
+                if (labeledSlider("##lfodep", "Depth", desc, &v, 0, 127)) {
                     gs.lfo_depth = (uint8_t)v;
                     engine.setAllVoicesPanDepth(gs.lfo_depth);
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("LFO depth: %.2f", gs.lfo_depth/127.f);
             }
 
-            // ── LIMITER ───────────────────────────────────────────────────────
-            ImGui::TableSetColumnIndex(2);
+            // ╔══════════════════╗  ╔══════════════════╗
+            // ║    LIMITER       ║  ║      BBE         ║
+            // ╚══════════════════╝  ╚══════════════════╝
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
             {
                 bool ena = gs.limiter_enabled;
-                if (ImGui::Checkbox("Enable##lim", &ena)) {
+                ImGui::SeparatorText("LIMITER");
+                ImGui::SameLine();
+                if (ImGui::Checkbox("##limon", &ena)) {
                     gs.limiter_enabled = ena;
                     if (dsp) dsp->setLimiterEnabled(ena ? 127 : 0);
                 }
             }
             {
                 int v = gs.limiter_thr;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Threshold##lim", &v, 0, 127)) {
+                float db = -40.f + 40.f * (v / 127.f);
+                char desc[48];
+                snprintf(desc, sizeof(desc), "Ceiling: %.1f dB", db);
+                if (labeledSlider("##limthr", "Threshold", desc, &v, 0, 127)) {
                     gs.limiter_thr = (uint8_t)v;
                     engine.setLimiterThreshold(gs.limiter_thr);
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%.1f dB", -40.f + 40.f*(gs.limiter_thr/127.f));
             }
             {
                 int v = gs.limiter_rel;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Release##lim", &v, 0, 127)) {
+                float ms = 10.f + 1990.f * (v / 127.f);
+                char desc[48];
+                snprintf(desc, sizeof(desc), "Gain recovery: %.0f ms", ms);
+                if (labeledSlider("##limrel", "Release  ", desc, &v, 0, 127)) {
                     gs.limiter_rel = (uint8_t)v;
                     engine.setLimiterRelease(gs.limiter_rel);
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%.0f ms", 10.f + 1990.f*(gs.limiter_rel/127.f));
             }
             // GR meter
             if (dsp) {
                 float gr = gs.limiter_enabled
-                    ? std::max(0.f, std::min(-dsp->limiter().gainReductionDb()/40.f, 1.f))
+                    ? std::max(0.f, std::min(-dsp->limiter().gainReductionDb() / 40.f, 1.f))
                     : 0.f;
-                char ovl[16];
+                char ovl[24];
                 if (gs.limiter_enabled)
-                    snprintf(ovl, sizeof(ovl), "%.1f dB", dsp->limiter().gainReductionDb());
+                    snprintf(ovl, sizeof(ovl), "GR  %.1f dB",
+                             dsp->limiter().gainReductionDb());
                 else
-                    snprintf(ovl, sizeof(ovl), "off");
+                    snprintf(ovl, sizeof(ovl), "GR  (disabled)");
                 ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
-                    gs.limiter_enabled ? IM_COL32(220,60,60,200) : IM_COL32(80,80,80,150));
-                ImGui::ProgressBar(gr, {-1.f, 10.f}, ovl);
+                    gs.limiter_enabled ? IM_COL32(220,60,60,200)
+                                       : IM_COL32(70,70,70,150));
+                ImGui::ProgressBar(gr, {-1.f, 14.f}, ovl);
                 ImGui::PopStyleColor();
             }
 
-            // ── BBE ───────────────────────────────────────────────────────────
-            ImGui::TableSetColumnIndex(3);
+            ImGui::TableSetColumnIndex(1);
             {
                 bool ena = gs.bbe_enabled;
-                if (ImGui::Checkbox("Enable##bbe", &ena)) {
+                ImGui::SeparatorText("BBE  Sonic Maximizer");
+                ImGui::SameLine();
+                if (ImGui::Checkbox("##bbeon", &ena)) {
                     gs.bbe_enabled = ena;
                     if (dsp) {
                         dsp->setBBEDefinition(ena ? gs.bbe_def : 0);
@@ -446,25 +474,25 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
             }
             {
                 int v = gs.bbe_def;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Definition##bbe", &v, 0, 127)) {
+                char desc[48];
+                snprintf(desc, sizeof(desc), "5 kHz presence: +%.1f dB",
+                    12.f * (v / 127.f));
+                if (labeledSlider("##bbedef", "Definition", desc, &v, 0, 127)) {
                     gs.bbe_def = (uint8_t)v;
                     gs.bbe_enabled = (v > 0 || gs.bbe_bass > 0);
                     engine.setBBEDefinition(gs.bbe_def);
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("5 kHz shelf  +%.1f dB", 12.f*(gs.bbe_def/127.f));
             }
             {
                 int v = gs.bbe_bass;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Bass Boost##bbe", &v, 0, 127)) {
+                char desc[48];
+                snprintf(desc, sizeof(desc), "180 Hz warmth: +%.1f dB",
+                    10.f * (v / 127.f));
+                if (labeledSlider("##bbebas", "Bass Boost", desc, &v, 0, 127)) {
                     gs.bbe_bass = (uint8_t)v;
                     gs.bbe_enabled = (v > 0 || gs.bbe_def > 0);
                     engine.setBBEBassBoost(gs.bbe_bass);
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("180 Hz shelf  +%.1f dB", 10.f*(gs.bbe_bass/127.f));
             }
 
             ImGui::EndTable();
