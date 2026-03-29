@@ -1,9 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/cmake_install.cmake",
-		"C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-build/cmake_install.cmake",
-		"C:/Users/jindr/PycharmProjects/resonators/IthacaCoreResonator/build/_deps/glfw-build/src/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
