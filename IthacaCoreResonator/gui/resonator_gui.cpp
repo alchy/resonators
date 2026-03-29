@@ -219,7 +219,7 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow* win = glfwCreateWindow(1000, 560,
+    GLFWwindow* win = glfwCreateWindow(1350, 680,
         "IthacaCoreResonator — Physics Piano", nullptr, nullptr);
     if (!win) {
         logger.log("GUI", LogSeverity::Error, "glfwCreateWindow failed");
@@ -383,9 +383,52 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
             midiLed("Note OFF",    act.note_off_ms.load(std::memory_order_relaxed));
             ledSep();
             midiLed("Pedal Event", act.pedal_ms.load(std::memory_order_relaxed));
+
+            // ── Output level indicator: red LED when peak > -9 dB ─────────────
+            static constexpr float CLIP_THRESH = 0.3548f;  // 10^(-9/20)
+            float peak_lin = engine.getOutputPeakLin();
+            bool  over     = (peak_lin > CLIP_THRESH);
+            {
+                ledSep();
+                float        r   = 5.f;
+                float        th  = ImGui::GetTextLineHeight();
+                ImVec2       p   = ImGui::GetCursorScreenPos();
+                ImU32        col = over ? IM_COL32(230, 40, 40, 255)
+                                        : IM_COL32(65, 30, 30, 220);
+                ImU32        rim = over ? IM_COL32(255, 120, 120, 200)
+                                        : IM_COL32(90, 50, 50, 160);
+                ImGui::GetWindowDrawList()->AddCircleFilled(
+                    {p.x + r, p.y + th * 0.5f}, r, col);
+                ImGui::GetWindowDrawList()->AddCircle(
+                    {p.x + r, p.y + th * 0.5f}, r, rim, 12, 1.f);
+                ImGui::Dummy({r * 2.f + 2.f, th});
+                ImGui::SameLine(0, 3.f);
+                // Show dB value next to the LED
+                float peak_db = (peak_lin > 1e-9f)
+                    ? 20.f * std::log10(peak_lin) : -99.f;
+                if (over)
+                    ImGui::TextColored({1.f, 0.3f, 0.3f, 1.f},
+                        "LEVEL %.1f dB", peak_db);
+                else
+                    ImGui::TextDisabled("LEVEL %.1f dB", peak_db);
+            }
         }
 
         ImGui::Separator();
+
+        // ── Two-column layout: [piano + matrix] | [params panel] ─────────────
+        // Piano width = white_key_count * WHITE_W (+window padding on both sides)
+        {
+            int nw = 0;
+            for (int m = PIANO_MIDI_LOW; m <= PIANO_MIDI_HIGH; m++)
+                if (!isBlack(m)) nw++;
+            float piano_px  = nw * WHITE_W;
+            float pad       = ImGui::GetStyle().WindowPadding.x;
+            float left_w    = piano_px + pad * 2.f;
+
+            // ── Left child: piano + 2×2 matrix ───────────────────────────────
+            ImGui::BeginChild("##left_panel", {left_w, 0.f}, false,
+                              ImGuiWindowFlags_NoScrollbar);
 
         // ── Piano keyboard ────────────────────────────────────────────────────
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.f, 4.f});
@@ -621,6 +664,168 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
 
             ImGui::EndTable();
         }
+
+            ImGui::EndChild();  // ##left_panel
+
+            // ── Vertical separator ────────────────────────────────────────────
+            ImGui::SameLine(0, 0);
+            {
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                float  h = ImGui::GetContentRegionAvail().y;
+                ImGui::GetWindowDrawList()->AddLine(
+                    p, {p.x, p.y + h},
+                    ImGui::GetColorU32(ImGuiCol_Separator), 1.f);
+                ImGui::SetCursorScreenPos({p.x + 1.f, p.y});
+            }
+            ImGui::SameLine(0, 8.f);
+
+            // ── Right child: synthesis params + live note data ────────────────
+            ImGui::BeginChild("##right_panel", {0.f, 0.f}, false,
+                              ImGuiWindowFlags_NoScrollbar);
+            {
+                // ── SynthConfig — 3 columns by nature ────────────────────────
+                ImGui::SeparatorText("SYNTHESIS PARAMS");
+                constexpr ImGuiTableFlags scf =
+                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame;
+                if (ImGui::BeginTable("##synthcfg", 3, scf)) {
+                    const SynthConfig& sc = engine.getSynthConfig();
+
+                    // Column headers
+                    ImGui::TableSetupColumn("STEREO");
+                    ImGui::TableSetupColumn("TIMBRE");
+                    ImGui::TableSetupColumn("LEVEL / ENV");
+                    ImGui::TableHeadersRow();
+                    ImGui::TableNextRow();
+
+                    auto cv = [](const char* name, const char* fmt, float val, const char* unit) {
+                        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(160,200,255,200));
+                        ImGui::Text("%s", name);
+                        ImGui::PopStyleColor();
+                        char buf[32]; snprintf(buf, sizeof(buf), fmt, val);
+                        ImGui::SameLine(0,4); ImGui::Text("%s %s", buf, unit);
+                    };
+
+                    // STEREO col
+                    ImGui::TableSetColumnIndex(0);
+                    cv("pan_spread",   "%.3f", sc.pan_spread,   "rad");
+                    cv("stereo_decorr","%.3f", sc.stereo_decorr,"");
+                    cv("stereo_boost", "%.3f", sc.stereo_boost, "");
+
+                    // TIMBRE col
+                    ImGui::TableSetColumnIndex(1);
+                    cv("beat_scale",    "%.3f", sc.beat_scale,         "");
+                    cv("hb_brightness", "%.3f", sc.harmonic_brightness,"");
+                    cv("eq_strength",   "%.3f", sc.eq_strength,        "");
+                    cv("eq_freq_min",   "%.0f", sc.eq_freq_min,        "Hz");
+
+                    // LEVEL/ENV col
+                    ImGui::TableSetColumnIndex(2);
+                    cv("target_rms",   "%.4f", sc.target_rms,  "");
+                    cv("vel_gamma",    "%.3f", sc.vel_gamma,   "");
+                    cv("noise_level",  "%.3f", sc.noise_level, "");
+                    cv("onset_ms",     "%.1f", sc.onset_ms,    "ms");
+
+                    ImGui::EndTable();
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+
+                // ── Last note header ──────────────────────────────────────────
+                int   ln_midi = engine.getLastNoteMidi();
+                int   ln_vel  = engine.getLastNoteVel();
+                static const char* nnames[] = {
+                    "C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,220,100,255));
+                ImGui::Text("LAST NOTE  %s%d  (MIDI %d)  vel %d",
+                    nnames[ln_midi % 12], ln_midi / 12 - 1, ln_midi, ln_vel);
+                ImGui::PopStyleColor();
+
+                NoteParams np = engine.lookupNote(ln_midi, ln_vel);
+                if (!np.valid) {
+                    ImGui::TextDisabled("(no data for this note)");
+                } else {
+                    // ── Note meta — 3 columns: structure | noise | EQ ─────────
+                    constexpr ImGuiTableFlags mf =
+                        ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame;
+                    if (ImGui::BeginTable("##notemeta", 3, mf)) {
+                        ImGui::TableSetupColumn("STRUCTURE");
+                        ImGui::TableSetupColumn("NOISE");
+                        ImGui::TableSetupColumn("SPECTRAL EQ");
+                        ImGui::TableHeadersRow();
+                        ImGui::TableNextRow();
+
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("strings  %d", np.n_strings);
+                        ImGui::Text("partials %d", np.n_partials);
+                        ImGui::Text("width    %.3f", np.width_factor);
+
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::Text("centroid  %.0f Hz", np.noise.centroid_hz);
+                        ImGui::Text("floor_rms %.4f",   np.noise.floor_rms);
+                        ImGui::Text("tau       %.3f s", np.noise.attack_tau_s);
+
+                        // EQ stats
+                        float eq_min = np.eq_gains_db[0], eq_max = np.eq_gains_db[0], eq_sum = 0.f;
+                        for (int i = 0; i < EQ_POINTS; i++) {
+                            if (np.eq_gains_db[i] < eq_min) eq_min = np.eq_gains_db[i];
+                            if (np.eq_gains_db[i] > eq_max) eq_max = np.eq_gains_db[i];
+                            eq_sum += np.eq_gains_db[i];
+                        }
+                        ImGui::TableSetColumnIndex(2);
+                        ImGui::Text("points   %d", EQ_POINTS);
+                        ImGui::Text("min      %.1f dB", eq_min);
+                        ImGui::Text("max      %.1f dB", eq_max);
+                        ImGui::Text("mean     %.1f dB", eq_sum / EQ_POINTS);
+
+                        ImGui::EndTable();
+                    }
+
+                    ImGui::Spacing();
+
+                    // ── Partials table — scrollable ───────────────────────────
+                    ImGui::SeparatorText("PARTIALS");
+                    constexpr ImGuiTableFlags ptf =
+                        ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
+                        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY;
+                    float row_h = ImGui::GetTextLineHeightWithSpacing();
+                    float tbl_h = std::min((float)np.n_partials + 1.5f, 18.f) * row_h;
+
+                    if (ImGui::BeginTable("##partials", 8, ptf, {0.f, tbl_h})) {
+                        ImGui::TableSetupScrollFreeze(0, 1);
+                        ImGui::TableSetupColumn("k",       ImGuiTableColumnFlags_WidthFixed, 26.f);
+                        ImGui::TableSetupColumn("f_hz",    ImGuiTableColumnFlags_WidthFixed, 66.f);
+                        ImGui::TableSetupColumn("A0",      ImGuiTableColumnFlags_WidthFixed, 66.f);
+                        ImGui::TableSetupColumn("tau1",    ImGuiTableColumnFlags_WidthFixed, 48.f);
+                        ImGui::TableSetupColumn("tau2",    ImGuiTableColumnFlags_WidthFixed, 48.f);
+                        ImGui::TableSetupColumn("a1",      ImGuiTableColumnFlags_WidthFixed, 44.f);
+                        ImGui::TableSetupColumn("beat_hz", ImGuiTableColumnFlags_WidthFixed, 58.f);
+                        ImGui::TableSetupColumn("mo",      ImGuiTableColumnFlags_WidthFixed, 22.f);
+                        ImGui::TableHeadersRow();
+
+                        for (int k = 0; k < np.n_partials; k++) {
+                            const PartialParams& pp = np.partials[k];
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0); ImGui::Text("%d", pp.k);
+                            ImGui::TableSetColumnIndex(1); ImGui::Text("%.2f", pp.f_hz);
+                            ImGui::TableSetColumnIndex(2); ImGui::Text("%.5f", pp.A0);
+                            ImGui::TableSetColumnIndex(3); ImGui::Text("%.2f", pp.tau1);
+                            ImGui::TableSetColumnIndex(4);
+                            if (pp.a1 < 1.f - 1e-5f) ImGui::Text("%.2f", pp.tau2);
+                            else                       ImGui::TextDisabled("-");
+                            ImGui::TableSetColumnIndex(5); ImGui::Text("%.3f", pp.a1);
+                            ImGui::TableSetColumnIndex(6);
+                            if (pp.beat_hz > 1e-6f) ImGui::Text("%.4f", pp.beat_hz);
+                            else                     ImGui::TextDisabled("0");
+                            ImGui::TableSetColumnIndex(7);
+                            ImGui::TextDisabled(pp.mono ? "y" : "n");
+                        }
+                        ImGui::EndTable();
+                    }
+                }
+            }
+            ImGui::EndChild();  // ##right_panel
+        }  // two-column scope
 
         // ── Sustain button (mouse/keyboard fallback) ──────────────────────────
         ImGui::Separator();

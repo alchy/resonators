@@ -174,6 +174,8 @@ void ResonatorEngine::stop() {
 // ── Thread-safe MIDI interface ────────────────────────────────────────────────
 
 void ResonatorEngine::noteOn (uint8_t midi, uint8_t velocity) {
+    last_note_midi_.store(midi,     std::memory_order_relaxed);
+    last_note_vel_ .store(velocity, std::memory_order_relaxed);
     pushMidi(MidiEvent::NOTE_ON, midi, velocity);
 }
 void ResonatorEngine::noteOff(uint8_t midi) {

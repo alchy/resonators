@@ -20,6 +20,7 @@
  */
 
 #include "voice_manager.h"
+#include "note_params.h"
 #include "../sampler/core_logger.h"
 #include "../dsp/dsp_chain.h"
 #include <string>
@@ -74,7 +75,16 @@ public:
     int  blockSize()    const { return block_size_; }
 
     // ── DSP chain access (for GUI metering / state readback) ──────────────────
-    DspChain* getDspChain() { return vm_.getDspChain(); }
+    DspChain*          getDspChain()      { return vm_.getDspChain(); }
+    float              getOutputPeakLin() const { return vm_.getOutputPeakLin(); }
+    const SynthConfig& getSynthConfig()   const { return vm_.getSynthConfig(); }
+
+    // Last note-on (updated on every noteOn call, thread-safe)
+    uint8_t  getLastNoteMidi() const { return last_note_midi_.load(std::memory_order_relaxed); }
+    uint8_t  getLastNoteVel()  const { return last_note_vel_ .load(std::memory_order_relaxed); }
+
+    // Look up interpolated NoteParams for a (midi, vel) — read-only LUT, safe from GUI thread
+    NoteParams lookupNote(int midi, int vel) const { return vm_.lookupNote(midi, vel); }
 
 private:
     // Called by miniaudio audio thread — must be RT-safe (no alloc, no lock)
@@ -87,6 +97,8 @@ private:
 
     ResonatorVoiceManager  vm_;
     Logger*                logger_      = nullptr;
+    std::atomic<uint8_t>   last_note_midi_{60};
+    std::atomic<uint8_t>   last_note_vel_ {80};
     ma_device*             device_      = nullptr;   // heap-allocated (opaque type)
     std::atomic<bool>      running_     {false};
     int                    sample_rate_ = RESONATOR_DEFAULT_SAMPLE_RATE;

@@ -12,6 +12,7 @@
  */
 
 #include "note_params.h"
+#include "note_lut.h"
 #include "resonator_voice.h"
 #include "synth_config.h"
 #include "../sampler/core_logger.h"
@@ -147,6 +148,13 @@ public:
     float getSynthVelGamma()           const noexcept { return synth_cfg_.vel_gamma;           }
 
     const SynthConfig& getSynthConfig() const noexcept { return synth_cfg_; }
+
+    // Look up interpolated NoteParams for a MIDI note + velocity (GUI read — LUT is read-only).
+    NoteParams lookupNote(int midi, int vel) const noexcept {
+        if (!initialized_) return {};
+        float vel_pos = (float)vel * (VEL_LAYERS - 1.f) / 127.f;
+        return interpolateNoteLayers(lut_, midi, vel_pos);
+    }
 
 private:
     void handleNoteOn (uint8_t midi, uint8_t vel) noexcept;
