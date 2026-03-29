@@ -339,7 +339,6 @@ const Session = {
       Session.name = null;
       el('main-panel').classList.add('hidden');
       el('btn-delete-session').disabled = true;
-      el('pipe-out').value = derivePaths(el('pipe-wav-dir')?.value.trim() || '').profile;
       el('gen-params-file').value = '';
       el('lcd-patch-name').textContent = '— NO SESSION —';
       Generate.stopPolling();
@@ -350,7 +349,6 @@ const Session = {
     Session.name = name;
     el('btn-delete-session').disabled = false;
     el('main-panel').classList.remove('hidden');
-    el('pipe-out').value = derivePaths(el('pipe-wav-dir')?.value.trim() || '').profile;
     el('lcd-patch-name').textContent = name.toUpperCase();
     await Session.loadConfig();
     await Player.loadFiles();
