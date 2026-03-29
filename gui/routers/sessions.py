@@ -12,6 +12,7 @@ Session layout:
       instrument-definition.json          metadata for player
 
 Endpoints:
+  GET    /api/sessions/banks               list bank subdirectories in a parent dir
   GET    /api/sessions                     list sessions
   POST   /api/sessions                     create session
   DELETE /api/sessions/{name}              delete session + generated files
@@ -40,6 +41,47 @@ router = APIRouter()
 
 SESSIONS_DIR = Path("gui/sessions")
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ── Bank browser ─────────────────────────────────────────────────────────────
+
+@router.get("/banks")
+def list_banks(dir: str = "C:/SoundBanks/IthacaPlayer"):
+    """List subdirectories of `dir` as candidate sample banks.
+
+    For each subdirectory returns:
+      name, path, wav_count (capped at 10 for speed), has_definition,
+      definition (parsed instrument-definition.json or null).
+    """
+    p = Path(dir)
+    if not p.exists() or not p.is_dir():
+        raise HTTPException(404, f"Directory not found: {dir}")
+    banks = []
+    for subdir in sorted(p.iterdir()):
+        if not subdir.is_dir():
+            continue
+        # Count WAVs quickly — stop at 10 to keep it fast
+        wav_count = 0
+        for f in subdir.iterdir():
+            if f.suffix.lower() == ".wav":
+                wav_count += 1
+                if wav_count >= 10:
+                    break
+        def_path = subdir / "instrument-definition.json"
+        definition = None
+        if def_path.exists():
+            try:
+                definition = json.loads(def_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        banks.append({
+            "name": subdir.name,
+            "path": str(subdir).replace("\\", "/"),
+            "wav_count": wav_count,
+            "has_definition": def_path.exists(),
+            "definition": definition,
+        })
+    return {"dir": str(p).replace("\\", "/"), "banks": banks}
 
 
 def session_dir(name: str) -> Path:
@@ -77,7 +119,8 @@ def list_sessions():
 
 
 class CreateSession(BaseModel):
-    name: str   # bank name, e.g. "ks-grand"
+    name: str                            # bank name, e.g. "ks-grand"
+    instrument_meta: Optional[dict] = None  # pre-filled from instrument-definition.json
 
 
 @router.post("")
@@ -95,15 +138,29 @@ def create_session(body: CreateSession):
     source_params = f"analysis/params-nn-profile-{name}.json"
 
     cfg = default_config(source_params)
-    cfg["instrument_meta"] = {
-        "instrumentName":    name,
-        "author":            "n/a",
-        "category":          "Piano",
-        "instrumentVersion": "1",
-        "description":       "n/a",
-        "velocityMaps":      "8",
-        "sampleCount":       0,
-    }
+
+    # Use caller-supplied metadata (from instrument-definition.json) if provided
+    if body.instrument_meta:
+        meta = {
+            "instrumentName":    body.instrument_meta.get("instrumentName", name),
+            "author":            body.instrument_meta.get("author", "n/a"),
+            "category":          body.instrument_meta.get("category", "Piano"),
+            "instrumentVersion": str(body.instrument_meta.get("instrumentVersion", "1")),
+            "description":       body.instrument_meta.get("description", "n/a"),
+            "velocityMaps":      str(body.instrument_meta.get("velocityMaps", "8")),
+            "sampleCount":       0,
+        }
+    else:
+        meta = {
+            "instrumentName":    name,
+            "author":            "n/a",
+            "category":          "Piano",
+            "instrumentVersion": "1",
+            "description":       "n/a",
+            "velocityMaps":      "8",
+            "sampleCount":       0,
+        }
+    cfg["instrument_meta"] = meta
     save_config(name, cfg)
     return {"name": name, "created": True}
 

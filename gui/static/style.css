@@ -1062,6 +1062,34 @@ audio {
 .modal-desc { font-size: 11px; color: var(--white-dim); margin: 0; font-family: var(--mono); }
 .error { color: var(--led-red); font-size: 11px; }
 
+/* ── Bank Browser ──────────────────────────────────────────────────────────── */
+#modal-bank-browser .modal-box { width: 540px; max-width: 95vw; }
+.bank-browser-scan-row { display: flex; gap: 6px; align-items: flex-end; margin-bottom: 10px; }
+.bank-browser-scan-row .field-label { flex: 1; }
+.bank-browser-scan-row input[type="text"] { width: 100%; }
+.bank-list { max-height: 320px; overflow-y: auto; border: 1px solid #333; border-radius: 4px; margin-bottom: 10px; }
+.bank-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-bottom: 1px solid #222;
+  cursor: pointer; transition: background 0.1s;
+}
+.bank-item:last-child { border-bottom: none; }
+.bank-item:hover { background: #1a2a1a; }
+.bank-item-icon { font-size: 16px; flex-shrink: 0; }
+.bank-item-name { font-size: 12px; font-weight: bold; color: #ccddcc; flex: 1; }
+.bank-item-meta { font-size: 10px; color: #778877; text-align: right; flex-shrink: 0; }
+.bank-item-desc { font-size: 10px; color: #667766; margin-top: 1px; }
+.bank-empty { padding: 16px; text-align: center; color: #556655; font-size: 11px; }
+
+/* ── No-sessions welcome ──────────────────────────────────────────────────── */
+#no-session-welcome {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 60vh; gap: 14px; color: #778877; font-size: 13px; font-family: var(--mono);
+}
+#no-session-welcome h2 { color: #aabbaa; font-size: 16px; margin: 0; letter-spacing: 2px; }
+#no-session-welcome p { margin: 0; color: #556655; font-size: 11px; }
+#btn-browse-banks { border-color: #44aa44; color: #44aa44; font-size: 13px; padding: 8px 22px; }
+
 /* ══════════════════════════════════════════════════════════════════════════════
    LED ANIMATION
 ══════════════════════════════════════════════════════════════════════════════ */

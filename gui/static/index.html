@@ -72,6 +72,32 @@
   </div>
 </div>
 
+<!-- ── Bank browser modal ──────────────────────────────────────────────────── -->
+<div id="modal-bank-browser" class="modal hidden">
+  <div class="modal-box">
+    <h2>Browse Banks</h2>
+    <div class="bank-browser-scan-row">
+      <label class="field-label">Banks directory
+        <input id="bank-browser-dir" type="text" value="C:/SoundBanks/IthacaPlayer" style="width:100%">
+      </label>
+      <button id="btn-bank-scan" class="primary" style="flex-shrink:0">Scan</button>
+    </div>
+    <div id="bank-browser-error" class="error hidden" style="margin-bottom:6px"></div>
+    <div id="bank-list" class="bank-list"><div class="bank-empty">Enter directory and click Scan</div></div>
+    <div class="modal-actions">
+      <button class="cancel" id="btn-bank-browser-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── No-sessions welcome ────────────────────────────────────────────────── -->
+<div id="no-session-welcome" class="hidden">
+  <h2>RESONATOR SYNTH</h2>
+  <p>No sessions yet. Select a WAV sample bank to get started.</p>
+  <button id="btn-browse-banks">&#128194; Browse Banks</button>
+  <p style="font-size:10px;margin-top:4px">Or enter a Bank dir in WAV SOURCE and click ▶ Use Bank</p>
+</div>
+
 <!-- ── Main layout ────────────────────────────────────────────────────────── -->
 <main class="hidden" id="main-panel">
 
@@ -81,7 +107,10 @@
     <div class="step-desc">Sample bank directory used by Extract&nbsp;&amp;&nbsp;Spectral&nbsp;EQ steps.</div>
     <div class="source-fields">
       <label class="field-label">Bank dir
-        <input id="pipe-wav-dir" type="text" value="C:/SoundBanks/IthacaPlayer/ks-grand">
+        <div style="display:flex;gap:4px;align-items:center">
+          <input id="pipe-wav-dir" type="text" value="C:/SoundBanks/IthacaPlayer/ks-grand" style="flex:1">
+          <button id="btn-open-bank-browser" title="Browse bank directories" style="flex-shrink:0;padding:4px 7px;font-size:12px">&#128194;</button>
+        </div>
       </label>
       <label class="field-label">Workers
         <input id="pipe-workers" type="number" value="4" min="1" max="16" style="width:50px">

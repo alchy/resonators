@@ -95,6 +95,9 @@ const API = {
   async sessions(path = '', opts = {}) {
     return API._fetch('/api/sessions' + path, opts);
   },
+  async banks(dir) {
+    return API._fetch('/api/sessions/banks?dir=' + encodeURIComponent(dir));
+  },
   async pipeline(path = '', opts = {}) {
     return API._fetch('/api/pipeline' + path, opts);
   },
@@ -278,11 +281,14 @@ const Session = {
     el('btn-create-session').addEventListener('click', async () => {
       const wav  = el('pipe-wav-dir')?.value.trim();
       const name = bankSuffix(wav);
+      // Use instrument_meta from bank browser selection if available
+      const meta = BankBrowser._selected?.definition || null;
       try {
         await API.sessions('', {
           method: 'POST',
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({ name, instrument_meta: meta }),
         });
+        BankBrowser._selected = null;
         closeModal('modal-new-session');
         await Session.loadList();
         el('session-select').value = name;
@@ -317,6 +323,15 @@ const Session = {
       sel.appendChild(o);
     });
     if (cur && sessions.find(s => s.name === cur)) sel.value = cur;
+    // Show welcome screen when no sessions exist
+    const welcome = el('no-session-welcome');
+    if (welcome) {
+      if (sessions.length === 0 && !Session.name) {
+        welcome.classList.remove('hidden');
+      } else {
+        welcome.classList.add('hidden');
+      }
+    }
   },
 
   async select(name) {
@@ -328,8 +343,10 @@ const Session = {
       el('gen-params-file').value = '';
       el('lcd-patch-name').textContent = '— NO SESSION —';
       Generate.stopPolling();
+      await Session.loadList();  // re-check welcome state
       return;
     }
+    el('no-session-welcome')?.classList.add('hidden');
     Session.name = name;
     el('btn-delete-session').disabled = false;
     el('main-panel').classList.remove('hidden');
@@ -1160,6 +1177,97 @@ const Player = {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Bank Browser
+// ══════════════════════════════════════════════════════════════════════════════
+const BankBrowser = {
+  // Selected bank info (set when user clicks a bank row)
+  _selected: null,
+
+  open(defaultDir) {
+    if (defaultDir) el('bank-browser-dir').value = defaultDir;
+    el('bank-browser-error').classList.add('hidden');
+    el('modal-bank-browser').classList.remove('hidden');
+  },
+
+  async scan() {
+    const dir = el('bank-browser-dir').value.trim();
+    if (!dir) return;
+    const errEl = el('bank-browser-error');
+    const listEl = el('bank-list');
+    errEl.classList.add('hidden');
+    listEl.innerHTML = '<div class="bank-empty">Scanning…</div>';
+    try {
+      const data = await API.banks(dir);
+      BankBrowser._render(data.banks);
+    } catch (e) {
+      errEl.textContent = e.message || 'Failed to scan directory';
+      errEl.classList.remove('hidden');
+      listEl.innerHTML = '<div class="bank-empty">—</div>';
+    }
+  },
+
+  _render(banks) {
+    const listEl = el('bank-list');
+    if (!banks.length) {
+      listEl.innerHTML = '<div class="bank-empty">No subdirectories found</div>';
+      return;
+    }
+    listEl.innerHTML = '';
+    banks.forEach(bank => {
+      const row = document.createElement('div');
+      row.className = 'bank-item';
+      const hasWavs = bank.wav_count > 0;
+      const icon = bank.has_definition ? '🎹' : (hasWavs ? '📁' : '📂');
+      const meta = bank.has_definition
+        ? (bank.definition?.instrumentName || bank.name)
+        : (hasWavs ? `${bank.wav_count}+ WAV files` : 'no WAV files');
+      const desc = bank.has_definition
+        ? [bank.definition?.category, bank.definition?.author].filter(Boolean).join(' · ')
+        : '';
+      row.innerHTML = `
+        <span class="bank-item-icon">${icon}</span>
+        <div style="flex:1;min-width:0">
+          <div class="bank-item-name">${bank.name}</div>
+          ${desc ? `<div class="bank-item-desc">${desc}</div>` : ''}
+        </div>
+        <span class="bank-item-meta">${meta}</span>`;
+      row.title = bank.path;
+      row.addEventListener('click', () => BankBrowser.selectBank(bank));
+      listEl.appendChild(row);
+    });
+  },
+
+  async selectBank(bank) {
+    // Fill wav-dir with selected bank path
+    el('pipe-wav-dir').value = bank.path;
+    el('pipe-wav-dir').dispatchEvent(new Event('input'));
+
+    closeModal('modal-bank-browser');
+
+    // Check if session already exists
+    const name = bankSuffix(bank.path);
+    const existing = await API.sessions('').catch(() => []);
+    if (existing.find(s => s.name === name)) {
+      el('session-select').value = name;
+      await Session.select(name);
+      return;
+    }
+
+    // Show confirm modal with pre-filled description
+    const def = bank.definition;
+    const desc = def
+      ? `"${def.instrumentName || name}" (${def.category || 'Piano'}) · ${def.author || 'n/a'}`
+      : `Bank "${bank.path}"`;
+    el('modal-bank-desc').textContent = `Create session "${name}" for ${desc}?`;
+
+    // Store definition for use on create
+    BankBrowser._selected = bank;
+    el('modal-error').classList.add('hidden');
+    el('modal-new-session').classList.remove('hidden');
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Init — ALL event listeners attached inside DOMContentLoaded
 // ══════════════════════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', async () => {
@@ -1168,6 +1276,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   Pipeline.init();
   Generate.init();
   Player.init();
+
+  // Bank browser
+  el('btn-bank-scan')?.addEventListener('click', () => BankBrowser.scan());
+  el('bank-browser-dir')?.addEventListener('keydown', e => { if (e.key === 'Enter') BankBrowser.scan(); });
+  el('btn-bank-browser-cancel')?.addEventListener('click', () => closeModal('modal-bank-browser'));
+  el('btn-open-bank-browser')?.addEventListener('click', () => {
+    // Pre-fill parent dir from current wav-dir (go one level up)
+    const cur = el('pipe-wav-dir')?.value.trim() || '';
+    const parent = cur.replace(/[/\\][^/\\]*$/, '') || cur;
+    BankBrowser.open(parent);
+  });
+  el('btn-browse-banks')?.addEventListener('click', () => BankBrowser.open());
 
   await Session.loadList();
 });
