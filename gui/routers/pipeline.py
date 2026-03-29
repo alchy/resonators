@@ -198,6 +198,10 @@ def _run_pipeline(req: PipelineRequest) -> None:
                    "--params",  req.params_out,
                    "--bank",    req.wav_dir,
                    "--out",     req.e2e_out]
+            best_pt = Path(req.e2e_out) / "best.pt"
+            if best_pt.exists():
+                cmd += ["--resume", str(best_pt)]
+                log.info(f"Pipeline [train]: resuming from {best_pt}")
             job["e2e_out"] = req.e2e_out
 
         log.info(f"Pipeline [{step}]: {' '.join(cmd)}")
