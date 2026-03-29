@@ -15,17 +15,11 @@ set(SYNTH_SOURCES
     synth/resonator_engine.cpp   # RT audio callback + MIDI queue
 )
 
-set(LOGGER_SOURCES
-    sampler/core_logger.cpp
-)
+# core_logger is header-only stub (no .cpp needed until IthacaCore DSP is copied)
+set(LOGGER_SOURCES)
 
-set(DSP_SOURCES
-    dsp/dsp_chain.cpp
-    dsp/bbe/bbe_processor.cpp
-    dsp/bbe/biquad_filter.cpp
-    dsp/bbe/harmonic_enhancer.cpp
-    dsp/limiter/limiter.cpp
-)
+# DSP chain is a header-only stub until IthacaCore dsp/ files are copied
+set(DSP_SOURCES)
 
 add_executable(IthacaCoreResonator
     main.cpp

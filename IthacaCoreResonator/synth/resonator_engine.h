@@ -20,17 +20,13 @@
  */
 
 #include "voice_manager.h"
+#include "../sampler/core_logger.h"
 #include <string>
 #include <atomic>
 #include <cstdint>
 
 // Forward-declare miniaudio device (avoid pulling the header into every TU)
 struct ma_device;
-
-// Placeholder logger interface (replace with core_logger when available)
-struct Logger {
-    void log(const char* tag, int /*severity*/, const std::string& msg);
-};
 
 // ── Constants (mirrors IthacaCore IthacaConfig.h) ─────────────────────────────
 static constexpr int   RESONATOR_DEFAULT_SAMPLE_RATE = 48000;

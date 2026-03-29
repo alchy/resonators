@@ -24,11 +24,6 @@
 #include <stdexcept>
 #include <algorithm>
 
-// ── Logger stub ───────────────────────────────────────────────────────────────
-void Logger::log(const char* tag, int /*sev*/, const std::string& msg) {
-    std::printf("[%s] %s\n", tag, msg.c_str());
-}
-
 // ── MIDI event queue (lock-free single-producer / single-consumer) ─────────────
 // Simple ring buffer — main thread writes, audio thread reads.
 struct MidiEvent {

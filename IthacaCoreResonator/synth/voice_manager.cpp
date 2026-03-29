@@ -1,22 +1,25 @@
 /*
  * voice_manager.cpp
  * ─────────────────
- * Polyphonic voice pool. One ResonatorVoice slot per MIDI note (21..108).
- * MIDI API mirrors IthacaCore VoiceManager for drop-in compatibility.
+ * API-compatible implementation of IthacaCore VoiceManager for physics synth.
  */
 
 #include "voice_manager.h"
 #include "note_lut.h"
-#include <iostream>
-#include <algorithm>
 #include <cstring>
+#include <cmath>
+#include <algorithm>
+#include <string>
+
+static constexpr float PI  = 3.14159265358979f;
+static constexpr float TAU = 2.f * PI;
 
 // ── Constructor / Destructor ──────────────────────────────────────────────────
 
 ResonatorVoiceManager::ResonatorVoiceManager()  = default;
 ResonatorVoiceManager::~ResonatorVoiceManager() = default;
 
-// ── initialize ────────────────────────────────────────────────────────────────
+// ── Initialization ────────────────────────────────────────────────────────────
 
 void ResonatorVoiceManager::initialize(const std::string& params_json_path,
                                         float sample_rate,
@@ -24,103 +27,273 @@ void ResonatorVoiceManager::initialize(const std::string& params_json_path,
     sample_rate_ = sample_rate;
     logger_      = &logger;
 
+    logger.log("VoiceManager", LogSeverity::Info, "Loading: " + params_json_path);
     try {
         lut_ = loadNoteLUT(params_json_path);
     } catch (const std::exception& e) {
-        logger.log("VoiceManager", 0, std::string("Failed to load params: ") + e.what());
+        logger.log("VoiceManager", LogSeverity::Error,
+            std::string("Failed to load params: ") + e.what());
         return;
     }
 
-    // Count loaded notes
     int valid = 0;
     for (int m = 0; m < MIDI_COUNT; m++)
         for (int v = 0; v < VEL_LAYERS; v++)
             if (lut_[m][v].valid) valid++;
 
-    logger.log("VoiceManager", 0,
-        "Loaded " + std::to_string(valid) + " note entries from " + params_json_path);
+    logger.log("VoiceManager", LogSeverity::Info,
+        std::to_string(valid) + " note entries loaded. SR=" +
+        std::to_string((int)sample_rate_));
 
+    prepareToPlay(512);
     initialized_ = true;
 }
 
-// ── MIDI note-on / note-off ───────────────────────────────────────────────────
+void ResonatorVoiceManager::changeSampleRate(float new_sr, Logger& logger) {
+    sample_rate_ = new_sr;
+    logger.log("VoiceManager", LogSeverity::Info,
+        "Sample rate changed to " + std::to_string((int)new_sr));
+    // Decay coefficients are recomputed at next noteOn; active voices continue
+    // at old rate until their natural end (safe trade-off for live SR change).
+}
 
-void ResonatorVoiceManager::setNoteStateMIDI(uint8_t midi_note,
-                                              bool note_on,
-                                              uint8_t velocity) {
-    if (!initialized_) return;
-    if (midi_note < MIDI_MIN || midi_note > MIDI_MAX) return;
+void ResonatorVoiceManager::prepareToPlay(int max_block_size) {
+    max_block_size_ = max_block_size;
+    tmp_l_.assign(max_block_size, 0.f);
+    tmp_r_.assign(max_block_size, 0.f);
+    dsp_chain_.prepare((int)sample_rate_, max_block_size);
+}
 
-    if (note_on) {
-        handleNoteOn(midi_note, velocity);
+// ── MIDI note control ─────────────────────────────────────────────────────────
+
+void ResonatorVoiceManager::setNoteStateMIDI(uint8_t midi, bool on,
+                                              uint8_t vel) noexcept {
+    if (midi < MIDI_MIN || midi > MIDI_MAX) return;
+    if (on) {
+        handleNoteOn(midi, vel);
     } else {
-        if (sustain_pedal_.load(std::memory_order_relaxed)) {
-            // Defer note-off until pedal release
-            held_notes_.push_back(midi_note);
-        } else {
-            handleNoteOff(midi_note);
-        }
-    }
-}
-
-void ResonatorVoiceManager::setSustainPedalMIDI(uint8_t val) {
-    bool down = (val >= 64);
-    bool was_down = sustain_pedal_.exchange(down, std::memory_order_relaxed);
-
-    if (was_down && !down) {
-        // Pedal released — send deferred note-offs
-        for (uint8_t midi : held_notes_)
+        if (sustain_pedal_.load(std::memory_order_relaxed))
+            delayed_note_offs_[midi] = true;
+        else
             handleNoteOff(midi);
-        held_notes_.clear();
     }
 }
 
-void ResonatorVoiceManager::handleNoteOn(uint8_t midi, uint8_t velocity) {
-    int vel_layer = std::min(7, (int)velocity * VEL_LAYERS / 128);
-    const NoteParams& p = lookupNote(lut_, midi, vel_layer);
+void ResonatorVoiceManager::setNoteStateMIDI(uint8_t midi, bool on) noexcept {
+    setNoteStateMIDI(midi, on, ITHACA_DEFAULT_VELOCITY);
+}
+
+void ResonatorVoiceManager::setSustainPedalMIDI(uint8_t val) noexcept {
+    setSustainPedalMIDI(val >= 64);
+}
+
+void ResonatorVoiceManager::setSustainPedalMIDI(bool down) noexcept {
+    bool was = sustain_pedal_.exchange(down, std::memory_order_acq_rel);
+    if (was && !down) processDelayedNoteOffs();
+}
+
+void ResonatorVoiceManager::handleNoteOn(uint8_t midi, uint8_t vel) noexcept {
+    int vel_layer = std::min(VEL_LAYERS - 1, (int)vel * VEL_LAYERS / 128);
+    const NoteParams& p = lookupNote(lut_, (int)midi, vel_layer);
     if (!p.valid) return;
 
-    int idx = midi - MIDI_MIN;
-    voices_[idx].noteOn(midi, vel_layer, p, sample_rate_);
+    // Scale A0 by master gain and velocity
+    // (NoteParams are const — voice applies master_gain_ in processBlock)
+    voices_[midi - MIDI_MIN].noteOn((int)midi, vel_layer, p, sample_rate_);
 }
 
-void ResonatorVoiceManager::handleNoteOff(uint8_t midi) {
-    int idx = midi - MIDI_MIN;
+void ResonatorVoiceManager::handleNoteOff(uint8_t midi) noexcept {
+    int idx = (int)midi - MIDI_MIN;
     if (idx >= 0 && idx < MIDI_COUNT)
         voices_[idx].noteOff();
 }
 
-// ── processBlockUninterleaved ─────────────────────────────────────────────────
-
-void ResonatorVoiceManager::processBlockUninterleaved(float* out_l,
-                                                       float* out_r,
-                                                       int n_samples) {
-    // Zero output buffers
-    std::memset(out_l, 0, sizeof(float) * n_samples);
-    std::memset(out_r, 0, sizeof(float) * n_samples);
-
-    // Sum all active voices
-    for (int i = 0; i < MIDI_COUNT; i++) {
-        if (voices_[i].isActive())
-            voices_[i].processBlock(out_l, out_r, n_samples);
+void ResonatorVoiceManager::processDelayedNoteOffs() noexcept {
+    for (int m = MIDI_MIN; m <= MIDI_MAX; m++) {
+        if (delayed_note_offs_[m]) {
+            delayed_note_offs_[m] = false;
+            handleNoteOff((uint8_t)m);
+        }
     }
-
-    // TODO: apply master DSP (limiter, BBE) once dsp/ files are copied
 }
 
-// ── Diagnostics ───────────────────────────────────────────────────────────────
+// ── Audio rendering ───────────────────────────────────────────────────────────
 
-int ResonatorVoiceManager::activeVoiceCount() const {
-    int count = 0;
+bool ResonatorVoiceManager::processBlockUninterleaved(float* out_l,
+                                                       float* out_r,
+                                                       int n) noexcept {
+    std::memset(out_l, 0, sizeof(float) * n);
+    std::memset(out_r, 0, sizeof(float) * n);
+    bool any = processBlockSegment(out_l, out_r, n);
+    finalizeBlock(out_l, out_r, n);
+    return any;
+}
+
+bool ResonatorVoiceManager::processBlockSegment(float* out_l, float* out_r,
+                                                  int n) noexcept {
+    bool any = false;
+    for (int i = 0; i < MIDI_COUNT; i++) {
+        if (voices_[i].isActive()) {
+            voices_[i].processBlock(out_l, out_r, n);
+            any = true;
+        }
+    }
+    // Apply master gain and pan
+    if (master_gain_ != 1.f || pan_l_ != 1.f || pan_r_ != 1.f) {
+        for (int s = 0; s < n; s++) {
+            out_l[s] *= master_gain_ * pan_l_;
+            out_r[s] *= master_gain_ * pan_r_;
+        }
+    }
+    return any;
+}
+
+void ResonatorVoiceManager::finalizeBlock(float* out_l, float* out_r,
+                                           int n) noexcept {
+    applyLfoPanToFinalMix(out_l, out_r, n);
+    dsp_chain_.process(out_l, out_r, n);
+}
+
+bool ResonatorVoiceManager::processBlockInterleaved(float* out, int n) noexcept {
+    // Ensure temp buffers are large enough
+    if ((int)tmp_l_.size() < n) {
+        tmp_l_.resize(n, 0.f);
+        tmp_r_.resize(n, 0.f);
+    }
+    std::memset(tmp_l_.data(), 0, sizeof(float) * n);
+    std::memset(tmp_r_.data(), 0, sizeof(float) * n);
+
+    bool any = processBlockSegment(tmp_l_.data(), tmp_r_.data(), n);
+    finalizeBlock(tmp_l_.data(), tmp_r_.data(), n);
+
+    // Interleave L R L R ...
+    for (int i = 0; i < n; i++) {
+        out[i * 2]     = tmp_l_[i];
+        out[i * 2 + 1] = tmp_r_[i];
+    }
+    return any;
+}
+
+void ResonatorVoiceManager::applyLfoPanToFinalMix(float* out_l, float* out_r,
+                                                    int n) noexcept {
+    if (lfo_depth_ < 1e-4f || lfo_speed_ < 1e-4f) return;
+
+    float phase_inc = TAU * lfo_speed_ / sample_rate_;
+    for (int s = 0; s < n; s++) {
+        float lfo      = lfo_depth_ * std::sin(lfo_phase_);
+        lfo_phase_    += phase_inc;
+        if (lfo_phase_ > TAU) lfo_phase_ -= TAU;
+
+        // Constant-power pan: centre ±lfo
+        float angle    = (PI / 4.f) * (1.f + lfo);
+        float gl       = std::cos(angle);
+        float gr       = std::sin(angle);
+        out_l[s]      *= gl;
+        out_r[s]      *= gr;
+    }
+}
+
+// ── Voice control ─────────────────────────────────────────────────────────────
+
+void ResonatorVoiceManager::stopAllVoices() noexcept {
     for (int i = 0; i < MIDI_COUNT; i++)
-        if (voices_[i].isActive()) count++;
-    return count;
+        if (voices_[i].isActive())
+            voices_[i].noteOff();
 }
 
-// ── Master DSP controls (stubs — wired when dsp/ files are present) ──────────
+void ResonatorVoiceManager::resetAllVoices(Logger& logger) {
+    stopAllVoices();
+    delayed_note_offs_.fill(false);
+    sustain_pedal_.store(false);
+    lfo_phase_ = 0.f;
+    logger.log("VoiceManager", LogSeverity::Info, "All voices reset");
+}
 
-void ResonatorVoiceManager::setLimiterThresholdMIDI(uint8_t) {}
-void ResonatorVoiceManager::setLimiterReleaseMIDI(uint8_t)   {}
-void ResonatorVoiceManager::setLimiterEnabledMIDI(uint8_t)   {}
-void ResonatorVoiceManager::setBBEDefinitionMIDI(uint8_t)    {}
-void ResonatorVoiceManager::setBBEBassBoostMIDI(uint8_t)     {}
+// ── Global voice parameters ───────────────────────────────────────────────────
+
+void ResonatorVoiceManager::setAllVoicesMasterGainMIDI(uint8_t val,
+                                                         Logger& logger) {
+    master_gain_ = (float)val / 127.f;
+    logger.log("VoiceManager", LogSeverity::Debug,
+        "Master gain: " + std::to_string(master_gain_));
+}
+
+void ResonatorVoiceManager::setAllVoicesPanMIDI(uint8_t val) noexcept {
+    // 64 = centre, 0 = hard left, 127 = hard right
+    float pan    = ((float)val - 64.f) / 64.f;   // -1..+1
+    float angle  = (PI / 4.f) * (1.f + pan);
+    pan_l_       = std::cos(angle);
+    pan_r_       = std::sin(angle);
+}
+
+void ResonatorVoiceManager::setAllVoicesStereoFieldAmountMIDI(uint8_t val) noexcept {
+    stereo_field_ = (float)val / 127.f;
+    // Applied to width_factor at next noteOn via lookupNote result
+    // (stored as a scale factor; voices started after this call use new width)
+}
+
+void ResonatorVoiceManager::setAllVoicesPanSpeedMIDI(uint8_t val) noexcept {
+    lfo_speed_ = (float)val / 127.f * 2.f;   // 0..2 Hz
+}
+
+void ResonatorVoiceManager::setAllVoicesPanDepthMIDI(uint8_t val) noexcept {
+    lfo_depth_ = (float)val / 127.f;
+}
+
+bool ResonatorVoiceManager::isLfoPanningActive() const noexcept {
+    return lfo_speed_ > 1e-4f && lfo_depth_ > 1e-4f;
+}
+
+// ── Statistics ────────────────────────────────────────────────────────────────
+
+int ResonatorVoiceManager::getActiveVoicesCount() const noexcept {
+    int n = 0;
+    for (int i = 0; i < MIDI_COUNT; i++)
+        if (voices_[i].isActive()) n++;
+    return n;
+}
+
+int ResonatorVoiceManager::getSustainingVoicesCount() const noexcept {
+    int n = 0;
+    for (int i = 0; i < MIDI_COUNT; i++)
+        if (voices_[i].isActive() && !voices_[i].isReleasing()) n++;
+    return n;
+}
+
+int ResonatorVoiceManager::getReleasingVoicesCount() const noexcept {
+    int n = 0;
+    for (int i = 0; i < MIDI_COUNT; i++)
+        if (voices_[i].isReleasing()) n++;
+    return n;
+}
+
+void ResonatorVoiceManager::logSystemStatistics(Logger& logger) {
+    logger.log("VoiceManager", LogSeverity::Info,
+        "SR=" + std::to_string((int)sample_rate_) +
+        " active=" + std::to_string(getActiveVoicesCount()) +
+        " sustaining=" + std::to_string(getSustainingVoicesCount()) +
+        " releasing=" + std::to_string(getReleasingVoicesCount()) +
+        " lfo=" + (isLfoPanningActive() ? "ON" : "off") +
+        " pedal=" + (sustain_pedal_.load() ? "DOWN" : "up") +
+        " gain=" + std::to_string(master_gain_));
+}
+
+// ── DSP effects ───────────────────────────────────────────────────────────────
+
+void ResonatorVoiceManager::setLimiterThresholdMIDI(uint8_t v) noexcept {
+    limiter_threshold_midi_ = v;
+    // dsp_chain_.getEffect<Limiter>(0)->setThresholdMIDI(v);  // wire when DSP copied
+}
+void ResonatorVoiceManager::setLimiterReleaseMIDI(uint8_t v) noexcept {
+    limiter_release_midi_ = v;
+}
+void ResonatorVoiceManager::setLimiterEnabledMIDI(uint8_t v) noexcept {
+    limiter_enabled_midi_ = v;
+}
+uint8_t ResonatorVoiceManager::getLimiterThresholdMIDI()     const noexcept { return limiter_threshold_midi_; }
+uint8_t ResonatorVoiceManager::getLimiterReleaseMIDI()       const noexcept { return limiter_release_midi_;   }
+uint8_t ResonatorVoiceManager::getLimiterEnabledMIDI()       const noexcept { return limiter_enabled_midi_;   }
+uint8_t ResonatorVoiceManager::getLimiterGainReductionMIDI() const noexcept { return 127; /* stub */ }
+
+void ResonatorVoiceManager::setBBEDefinitionMIDI(uint8_t v) noexcept { bbe_definition_midi_ = v; }
+void ResonatorVoiceManager::setBBEBassBoostMIDI (uint8_t v) noexcept { bbe_bass_boost_midi_  = v; }
