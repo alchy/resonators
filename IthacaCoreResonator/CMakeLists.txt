@@ -12,6 +12,7 @@ set(SYNTH_SOURCES
     synth/resonator_voice.cpp
     synth/voice_manager.cpp
     synth/biquad_eq.cpp
+    synth/resonator_engine.cpp   # RT audio callback + MIDI queue
 )
 
 set(LOGGER_SOURCES
@@ -37,8 +38,24 @@ add_executable(IthacaCoreResonator
 
 target_include_directories(IthacaCoreResonator PRIVATE
     ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/third_party   # nlohmann/json.hpp
+    ${CMAKE_SOURCE_DIR}/synth         # resonator_engine.h includes miniaudio.h
+    ${CMAKE_SOURCE_DIR}/third_party   # nlohmann/json.hpp, miniaudio.h
 )
+
+# ── miniaudio platform dependencies ──────────────────────────────────────────
+if (WIN32)
+    target_link_libraries(IthacaCoreResonator PRIVATE ole32 winmm)
+elseif (APPLE)
+    target_link_libraries(IthacaCoreResonator PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
+else()  # Linux
+    target_link_libraries(IthacaCoreResonator PRIVATE pthread m dl)
+    find_package(ALSA QUIET)
+    if (ALSA_FOUND)
+        target_link_libraries(IthacaCoreResonator PRIVATE ${ALSA_LIBRARIES})
+        target_compile_definitions(IthacaCoreResonator PRIVATE MA_ENABLE_ALSA)
+    endif()
+endif()
 
 # ── SIMD ─────────────────────────────────────────────────────────────────────
 
