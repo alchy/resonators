@@ -100,16 +100,18 @@ def _build_params_tensor(sample: dict, K: int) -> dict:
     bHz_vec  = [0.30]  * K
     bDep_vec = [0.05]  * K
 
+    def _f(v, default): return float(v) if v is not None else default
+
     for p in partials:
         k_idx = int(p['k']) - 1
         if k_idx >= K:
             continue
-        A0_vec[k_idx]   = max(float(p.get('A0',          1e-6)), 1e-6)
-        tau1_vec[k_idx] = max(float(p.get('tau1',        0.10)), TAU1_MIN)
-        tau2_vec[k_idx] = max(float(p.get('tau2',        3.00)), TAU2_MIN)
-        a1_vec[k_idx]   = max(0.01, min(0.99, float(p.get('a1', 0.25))))
-        bHz_vec[k_idx]  = max(float(p.get('beat_hz',     0.30)), BEAT_MIN)
-        bDep_vec[k_idx] = max(0.001, min(0.499, float(p.get('beat_depth', 0.05))))
+        A0_vec[k_idx]   = max(_f(p.get('A0'),          1e-6), 1e-6)
+        tau1_vec[k_idx] = max(_f(p.get('tau1'),        0.10), TAU1_MIN)
+        tau2_vec[k_idx] = max(_f(p.get('tau2'),        3.00), TAU2_MIN)
+        a1_vec[k_idx]   = max(0.01, min(0.99, _f(p.get('a1'), 0.25)))
+        bHz_vec[k_idx]  = max(_f(p.get('beat_hz'),     0.30), BEAT_MIN)
+        bDep_vec[k_idx] = max(0.001, min(0.499, _f(p.get('beat_depth'), 0.05)))
 
     # Normalise A0 (mean = 1.0)
     A0_t = torch.tensor(A0_vec, dtype=torch.float32)

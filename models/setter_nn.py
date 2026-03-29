@@ -294,16 +294,18 @@ def load_params_tensors(params_json: str, K: int, device: str = 'cpu') -> dict:
         bHz_vec  = [0.3] * K
         bDep_vec = [0.05] * K
 
+        def _f(v, default): return float(v) if v is not None else default
+
         for p in partials:
             k_idx = int(p['k']) - 1
             if k_idx >= K:
                 continue
-            A0_vec[k_idx]   = max(float(p.get('A0', 0.0)), 1e-6)
-            tau1_vec[k_idx] = max(float(p.get('tau1', 0.1)), TAU1_MIN)
-            tau2_vec[k_idx] = max(float(p.get('tau2', 3.0)), TAU2_MIN)
-            a1_vec[k_idx]   = max(0.01, min(0.99, float(p.get('a1', 0.25))))
-            bHz_vec[k_idx]  = max(float(p.get('beat_hz', 0.3)), BEAT_MIN)
-            bDep_vec[k_idx] = max(0.001, min(0.499, float(p.get('beat_depth', 0.05))))
+            A0_vec[k_idx]   = max(_f(p.get('A0'),          0.0),  1e-6)
+            tau1_vec[k_idx] = max(_f(p.get('tau1'),        0.1),  TAU1_MIN)
+            tau2_vec[k_idx] = max(_f(p.get('tau2'),        3.0),  TAU2_MIN)
+            a1_vec[k_idx]   = max(0.01, min(0.99, _f(p.get('a1'), 0.25)))
+            bHz_vec[k_idx]  = max(_f(p.get('beat_hz'),     0.3),  BEAT_MIN)
+            bDep_vec[k_idx] = max(0.001, min(0.499, _f(p.get('beat_depth'), 0.05)))
 
         # Normalize A0 so mean = 1.0 (SetterNN output convention)
         A0_t = torch.tensor(A0_vec, dtype=torch.float32)

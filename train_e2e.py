@@ -130,7 +130,7 @@ def phase0(
         opt_a.zero_grad()
         pred = setter(f0, vel)
         B_p = pred['B'].clamp(1e-7)
-        B_t = targets['B'].squeeze(1).clamp(1e-7)
+        B_t = targets['B'].clamp(1e-7)
         loss = torch.nn.functional.mse_loss(torch.log(B_p), torch.log(B_t))
         loss.backward()
         torch.nn.utils.clip_grad_norm_(setter.B_net.parameters(), 1.0)
