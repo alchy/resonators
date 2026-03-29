@@ -49,6 +49,18 @@ private:
     // ── Spectral EQ ───────────────────────────────────────────────────────────
     BiquadEQ eq_l_, eq_r_;
 
+    // ── Envelope initial amplitudes ───────────────────────────────────────────
+    float a1_[MAX_PARTIALS] = {};    // A0 * a1  (fast component initial amp)
+    float a2_[MAX_PARTIALS] = {};    // A0 * (1-a1)
+
+    // ── Noise state ───────────────────────────────────────────────────────────
+    float noise_env_   = 0.f;   // current noise envelope amplitude
+    float noise_decay_ = 0.f;   // per-sample decay multiplier
+    float noise_alpha_ = 0.5f;  // 1-pole LP coefficient
+    float noise_state_ = 0.f;   // 1-pole LP delay
+
+    float width_factor_ = 0.5f; // M/S stereo width
+
     // ── Release ramp ─────────────────────────────────────────────────────────
     float release_gain_ = 1.f;
     float release_step_ = 0.f;   // negative, computed from RELEASE_MS
@@ -57,9 +69,10 @@ private:
     static constexpr float RELEASE_MS = 10.f;  // click-prevention fade
 
     // ── Misc ──────────────────────────────────────────────────────────────────
-    int   n_partials_  = 0;
-    int   n_strings_   = 2;
-    float sample_rate_ = 44100.f;
-    int   midi_        = -1;
-    bool  active_      = false;
+    int     n_partials_  = 0;
+    int     n_strings_   = 2;
+    float   sample_rate_ = 44100.f;
+    int64_t sample_idx_  = 0;
+    int     midi_        = -1;
+    bool    active_      = false;
 };

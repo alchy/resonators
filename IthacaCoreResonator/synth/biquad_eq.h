@@ -21,9 +21,12 @@ struct BiquadState {
 
 class BiquadEQ {
 public:
-    // Design all bands from eq_gains_db[] at the given sample rate.
+    // Design all bands from the 64-point EQ curve (params.json spectral_eq).
+    // Interpolates gain at each band centre, designs RBJ peaking biquads.
     // Call once at note-on.
-    void design(const float eq_gains_db[EQ_BANDS], float sample_rate);
+    void design(const float eq_freqs_hz[EQ_POINTS],
+                const float eq_gains_db[EQ_POINTS],
+                float sample_rate);
 
     // Reset delay-line state (call at note-on after design).
     void reset();
