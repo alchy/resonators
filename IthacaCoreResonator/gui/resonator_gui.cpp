@@ -213,7 +213,7 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow* win = glfwCreateWindow(1000, 420,
+    GLFWwindow* win = glfwCreateWindow(1000, 560,
         "IthacaCoreResonator — Physics Piano", nullptr, nullptr);
     if (!win) {
         logger.log("GUI", LogSeverity::Error, "glfwCreateWindow failed");
@@ -326,138 +326,148 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
 
         ImGui::Separator();
 
-        // ── Controls ──────────────────────────────────────────────────────────
-        float col_w = (float)(fb_w - 40) / 4.f;
-
-        // Master gain
-        {
-            int v = gs.master_gain;
-            ImGui::SetNextItemWidth(col_w);
-            if (ImGui::SliderInt("Master Gain", &v, 0, 127)) {
-                gs.master_gain = (uint8_t)v;
-                engine.setAllVoicesMasterGain(gs.master_gain);
-            }
-        }
-        ImGui::SameLine(0, 16.f);
-        // Pan
-        {
-            int v = gs.pan;
-            ImGui::SetNextItemWidth(col_w);
-            if (ImGui::SliderInt("Pan", &v, 0, 127)) {
-                gs.pan = (uint8_t)v;
-                engine.setAllVoicesPan(gs.pan);
-            }
-        }
-        ImGui::SameLine(0, 16.f);
-        // LFO speed
-        {
-            int v = gs.lfo_speed;
-            ImGui::SetNextItemWidth(col_w);
-            if (ImGui::SliderInt("LFO Speed", &v, 0, 127)) {
-                gs.lfo_speed = (uint8_t)v;
-                engine.setAllVoicesPanSpeed(gs.lfo_speed);
-            }
-        }
-        ImGui::SameLine(0, 16.f);
-        // LFO depth
-        {
-            int v = gs.lfo_depth;
-            ImGui::SetNextItemWidth(col_w);
-            if (ImGui::SliderInt("LFO Depth", &v, 0, 127)) {
-                gs.lfo_depth = (uint8_t)v;
-                engine.setAllVoicesPanDepth(gs.lfo_depth);
-            }
-        }
-
-        // ── DSP chain ─────────────────────────────────────────────────────────
-        ImGui::Separator();
+        // ── 2×2 controller matrix ─────────────────────────────────────────────
         DspChain* dsp = engine.getDspChain();
+        constexpr ImGuiTableFlags tflags =
+            ImGuiTableFlags_BordersInnerV |
+            ImGuiTableFlags_SizingStretchSame |
+            ImGuiTableFlags_PadOuterX;
 
-        // Limiter row
-        ImGui::TextColored({0.9f,0.7f,0.2f,1.f}, "LIMITER");
-        ImGui::SameLine(0, 6.f);
-        {
-            bool ena = gs.limiter_enabled;
-            if (ImGui::Checkbox("##limon", &ena)) {
-                gs.limiter_enabled = ena;
-                if (dsp) dsp->setLimiterEnabled(ena ? 127 : 0);
-            }
-        }
-        ImGui::SameLine(0, 12.f);
-        {
-            int v = gs.limiter_thr;
-            ImGui::SetNextItemWidth(col_w - 20.f);
-            if (ImGui::SliderInt("Threshold##lim", &v, 0, 127)) {
-                gs.limiter_thr = (uint8_t)v;
-                engine.setLimiterThreshold(gs.limiter_thr);
-            }
-            if (ImGui::IsItemHovered()) {
-                float db = -40.f + 40.f * (gs.limiter_thr / 127.f);
-                ImGui::SetTooltip("%.1f dB", db);
-            }
-        }
-        ImGui::SameLine(0, 12.f);
-        {
-            int v = gs.limiter_rel;
-            ImGui::SetNextItemWidth(col_w - 20.f);
-            if (ImGui::SliderInt("Release##lim", &v, 0, 127)) {
-                gs.limiter_rel = (uint8_t)v;
-                engine.setLimiterRelease(gs.limiter_rel);
-            }
-            if (ImGui::IsItemHovered()) {
-                float ms = 10.f + 1990.f * (gs.limiter_rel / 127.f);
-                ImGui::SetTooltip("%.0f ms", ms);
-            }
-        }
-        // GR meter
-        if (dsp && gs.limiter_enabled) {
-            ImGui::SameLine(0, 12.f);
-            float gr = -dsp->limiter().gainReductionDb() / 40.f;
-            gr = std::max(0.f, std::min(gr, 1.f));
-            char ovl[16]; snprintf(ovl, sizeof(ovl), "%.1f dB",
-                dsp->limiter().gainReductionDb());
-            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, IM_COL32(220,60,60,200));
-            ImGui::ProgressBar(gr, {80.f, 14.f}, ovl);
-            ImGui::PopStyleColor();
-        }
+        if (ImGui::BeginTable("ctrl_matrix", 4, tflags)) {
+            ImGui::TableSetupColumn("MIX",     ImGuiTableColumnFlags_None);
+            ImGui::TableSetupColumn("LFO PAN", ImGuiTableColumnFlags_None);
+            ImGui::TableSetupColumn("LIMITER", ImGuiTableColumnFlags_None);
+            ImGui::TableSetupColumn("BBE",     ImGuiTableColumnFlags_None);
+            ImGui::TableHeadersRow();
+            ImGui::TableNextRow();
 
-        // BBE row
-        ImGui::SameLine(0, 24.f);
-        ImGui::TextColored({0.4f,0.85f,1.f,1.f}, "BBE");
-        ImGui::SameLine(0, 6.f);
-        {
-            bool ena = gs.bbe_enabled;
-            if (ImGui::Checkbox("##bbeon", &ena)) {
-                gs.bbe_enabled = ena;
-                if (dsp) {
-                    dsp->setBBEDefinition(ena ? gs.bbe_def : 0);
-                    dsp->setBBEBassBoost (ena ? gs.bbe_bass : 0);
+            // ── MIX ──────────────────────────────────────────────────────────
+            ImGui::TableSetColumnIndex(0);
+            {
+                int v = gs.master_gain;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Gain##mix", &v, 0, 127)) {
+                    gs.master_gain = (uint8_t)v;
+                    engine.setAllVoicesMasterGain(gs.master_gain);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Master Gain");
+            }
+            {
+                int v = gs.pan;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Pan##mix", &v, 0, 127)) {
+                    gs.pan = (uint8_t)v;
+                    engine.setAllVoicesPan(gs.pan);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Pan  (64 = centre)");
+            }
+
+            // ── LFO PAN ───────────────────────────────────────────────────────
+            ImGui::TableSetColumnIndex(1);
+            {
+                int v = gs.lfo_speed;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Speed##lfo", &v, 0, 127)) {
+                    gs.lfo_speed = (uint8_t)v;
+                    engine.setAllVoicesPanSpeed(gs.lfo_speed);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("LFO speed: %.2f Hz", 2.f*(gs.lfo_speed/127.f));
+            }
+            {
+                int v = gs.lfo_depth;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Depth##lfo", &v, 0, 127)) {
+                    gs.lfo_depth = (uint8_t)v;
+                    engine.setAllVoicesPanDepth(gs.lfo_depth);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("LFO depth: %.2f", gs.lfo_depth/127.f);
+            }
+
+            // ── LIMITER ───────────────────────────────────────────────────────
+            ImGui::TableSetColumnIndex(2);
+            {
+                bool ena = gs.limiter_enabled;
+                if (ImGui::Checkbox("Enable##lim", &ena)) {
+                    gs.limiter_enabled = ena;
+                    if (dsp) dsp->setLimiterEnabled(ena ? 127 : 0);
                 }
             }
-        }
-        ImGui::SameLine(0, 12.f);
-        {
-            int v = gs.bbe_def;
-            ImGui::SetNextItemWidth(col_w - 20.f);
-            if (ImGui::SliderInt("Definition##bbe", &v, 0, 127)) {
-                gs.bbe_def = (uint8_t)v;
-                gs.bbe_enabled = (v > 0 || gs.bbe_bass > 0);
-                engine.setBBEDefinition(gs.bbe_def);
+            {
+                int v = gs.limiter_thr;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Threshold##lim", &v, 0, 127)) {
+                    gs.limiter_thr = (uint8_t)v;
+                    engine.setLimiterThreshold(gs.limiter_thr);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%.1f dB", -40.f + 40.f*(gs.limiter_thr/127.f));
             }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("5 kHz shelf: +%.1f dB", 12.f*(gs.bbe_def/127.f));
-        }
-        ImGui::SameLine(0, 12.f);
-        {
-            int v = gs.bbe_bass;
-            ImGui::SetNextItemWidth(col_w - 20.f);
-            if (ImGui::SliderInt("Bass Boost##bbe", &v, 0, 127)) {
-                gs.bbe_bass = (uint8_t)v;
-                gs.bbe_enabled = (v > 0 || gs.bbe_def > 0);
-                engine.setBBEBassBoost(gs.bbe_bass);
+            {
+                int v = gs.limiter_rel;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Release##lim", &v, 0, 127)) {
+                    gs.limiter_rel = (uint8_t)v;
+                    engine.setLimiterRelease(gs.limiter_rel);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%.0f ms", 10.f + 1990.f*(gs.limiter_rel/127.f));
             }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("180 Hz shelf: +%.1f dB", 10.f*(gs.bbe_bass/127.f));
+            // GR meter
+            if (dsp) {
+                float gr = gs.limiter_enabled
+                    ? std::max(0.f, std::min(-dsp->limiter().gainReductionDb()/40.f, 1.f))
+                    : 0.f;
+                char ovl[16];
+                if (gs.limiter_enabled)
+                    snprintf(ovl, sizeof(ovl), "%.1f dB", dsp->limiter().gainReductionDb());
+                else
+                    snprintf(ovl, sizeof(ovl), "off");
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
+                    gs.limiter_enabled ? IM_COL32(220,60,60,200) : IM_COL32(80,80,80,150));
+                ImGui::ProgressBar(gr, {-1.f, 10.f}, ovl);
+                ImGui::PopStyleColor();
+            }
+
+            // ── BBE ───────────────────────────────────────────────────────────
+            ImGui::TableSetColumnIndex(3);
+            {
+                bool ena = gs.bbe_enabled;
+                if (ImGui::Checkbox("Enable##bbe", &ena)) {
+                    gs.bbe_enabled = ena;
+                    if (dsp) {
+                        dsp->setBBEDefinition(ena ? gs.bbe_def : 0);
+                        dsp->setBBEBassBoost (ena ? gs.bbe_bass : 0);
+                    }
+                }
+            }
+            {
+                int v = gs.bbe_def;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Definition##bbe", &v, 0, 127)) {
+                    gs.bbe_def = (uint8_t)v;
+                    gs.bbe_enabled = (v > 0 || gs.bbe_bass > 0);
+                    engine.setBBEDefinition(gs.bbe_def);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("5 kHz shelf  +%.1f dB", 12.f*(gs.bbe_def/127.f));
+            }
+            {
+                int v = gs.bbe_bass;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Bass Boost##bbe", &v, 0, 127)) {
+                    gs.bbe_bass = (uint8_t)v;
+                    gs.bbe_enabled = (v > 0 || gs.bbe_def > 0);
+                    engine.setBBEBassBoost(gs.bbe_bass);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("180 Hz shelf  +%.1f dB", 10.f*(gs.bbe_bass/127.f));
+            }
+
+            ImGui::EndTable();
         }
 
         // ── Sustain button (mouse/keyboard fallback) ──────────────────────────
