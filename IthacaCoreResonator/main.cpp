@@ -2,29 +2,33 @@
  * main.cpp — IthacaCoreResonator
  * ─────────────────────────────────
  * Usage:
- *   IthacaCoreResonator [params.json]
+ *   IthacaCoreResonator [params.json] [midi_port]
  *
- * Opens the default audio device, loads the physics param table,
- * and enters an interactive keyboard → MIDI loop.
+ *   params.json  — physics parameter table (default: ../analysis/params.json)
+ *   midi_port    — MIDI input port index (default: 0, first available)
  *
- * Mirrors IthacaCore main.cpp pattern:
- *   Logger → runResonator() → ResonatorEngine → audio callback
+ * At startup, lists all available MIDI ports.
+ * If no MIDI hardware is present, keyboard fallback is active (a-k = C4-C5).
+ * On macOS/Linux, also opens a virtual MIDI port for DAW routing.
  */
 
 #include "synth/resonator_engine.h"
 #include <iostream>
 #include <string>
+#include <cstdlib>
 
 int main(int argc, char* argv[]) {
-    std::cout << "IthacaCoreResonator v1.0 — Physics Piano Synthesizer\n";
+    std::cout << "IthacaCoreResonator v1.0 — Physics Piano Synthesizer\n\n";
 
     const std::string params_json = (argc > 1)
         ? argv[1]
         : "../analysis/params.json";
 
+    int midi_port = (argc > 2) ? std::atoi(argv[2]) : 0;
+
     try {
         Logger logger;
-        return runResonator(logger, params_json);
+        return runResonator(logger, params_json, midi_port);
 
     } catch (const std::exception& e) {
         std::cerr << "CRITICAL ERROR: " << e.what() << "\n";

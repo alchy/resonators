@@ -18,6 +18,7 @@
 #include "miniaudio.h"
 
 #include "resonator_engine.h"
+#include "midi_input.h"
 #include "note_lut.h"
 #include <cstring>
 #include <cstdio>
@@ -175,42 +176,57 @@ void ResonatorEngine::sustainPedal(uint8_t val) {
 
 // ── Master DSP ────────────────────────────────────────────────────────────────
 
-void ResonatorEngine::setLimiterThreshold(uint8_t v) { vm_.setLimiterThresholdMIDI(v); }
-void ResonatorEngine::setLimiterRelease  (uint8_t v) { vm_.setLimiterReleaseMIDI(v);   }
-void ResonatorEngine::setBBEDefinition   (uint8_t v) { vm_.setBBEDefinitionMIDI(v);    }
-void ResonatorEngine::setBBEBassBoost    (uint8_t v) { vm_.setBBEBassBoostMIDI(v);     }
+void ResonatorEngine::setLimiterThreshold   (uint8_t v) { vm_.setLimiterThresholdMIDI(v);    }
+void ResonatorEngine::setLimiterRelease     (uint8_t v) { vm_.setLimiterReleaseMIDI(v);      }
+void ResonatorEngine::setBBEDefinition      (uint8_t v) { vm_.setBBEDefinitionMIDI(v);       }
+void ResonatorEngine::setBBEBassBoost       (uint8_t v) { vm_.setBBEBassBoostMIDI(v);        }
+void ResonatorEngine::setAllVoicesMasterGain(uint8_t v) { vm_.setAllVoicesMasterGainMIDI(v, *logger_); }
+void ResonatorEngine::setAllVoicesPan       (uint8_t v) { vm_.setAllVoicesPanMIDI(v);        }
+void ResonatorEngine::setAllVoicesPanSpeed  (uint8_t v) { vm_.setAllVoicesPanSpeedMIDI(v);   }
+void ResonatorEngine::setAllVoicesPanDepth  (uint8_t v) { vm_.setAllVoicesPanDepthMIDI(v);   }
 
 int ResonatorEngine::activeVoices() const { return vm_.activeVoiceCount(); }
 
-// ── runResonator — interaktivní loop (mirrors runSampler) ─────────────────────
+// ── runResonator — main loop (mirrors runSampler) ─────────────────────────────
 
-int runResonator(Logger& logger, const std::string& params_json_path) {
-    logger.log("runResonator", 0, "=== IthacaCoreResonator STARTING ===");
+int runResonator(Logger& logger, const std::string& params_json_path,
+                 int midi_port) {
+    logger.log("runResonator", LogSeverity::Info,
+               "=== IthacaCoreResonator STARTING ===");
 
     ResonatorEngine engine;
-
     if (!engine.initialize(params_json_path, logger)) {
-        logger.log("runResonator", 2, "Initialization failed");
+        logger.log("runResonator", LogSeverity::Error, "Initialization failed");
         return 1;
     }
-
     if (!engine.start()) {
-        logger.log("runResonator", 2, "Audio start failed");
+        logger.log("runResonator", LogSeverity::Error, "Audio start failed");
         return 1;
     }
 
-    logger.log("runResonator", 0, "=== READY — keyboard: a-k = C4-B4, z=sustain, q=quit ===");
+    // ── MIDI input ────────────────────────────────────────────────────────────
+    MidiInput midi;
+    auto ports = MidiInput::listPorts();
+    if (!ports.empty()) {
+        std::printf("[MIDI] Available ports:\n");
+        for (int i = 0; i < (int)ports.size(); i++)
+            std::printf("  [%d] %s\n", i, ports[i].c_str());
+        midi.open(engine, midi_port);
+    }
+#ifndef _WIN32
+    if (!midi.isOpen())
+        midi.openVirtual(engine);   // macOS/Linux virtual port as fallback
+#endif
 
-    // Simple keyboard → MIDI mapping (PC keyboard, no platform MIDI needed)
-    // Row: a s d f g h j k  →  C D E F G A B C  (MIDI 60..72)
-    const char keys[]    = "asdfghjk";
-    const int  midis[]   = { 60, 62, 64, 65, 67, 69, 71, 72 };
-    bool       held[128] = {};
-    bool       sustain   = false;
+    // ── Keyboard fallback (a-k = C4..C5, z = sustain, q = quit) ─────────────
+    const char  keys[] = "asdfghjk";
+    const int  midis[] = { 60, 62, 64, 65, 67, 69, 71, 72 };
+    bool       sustain = false;
+
+    std::printf("\nKeyboard fallback: a-k = C4-C5  |  z = sustain  |  q = quit\n\n");
 
 #ifdef _WIN32
     #include <conio.h>
-    // Windows: _kbhit / _getch (non-blocking)
     while (true) {
         if (_kbhit()) {
             int ch = _getch();
@@ -222,19 +238,16 @@ int runResonator(Logger& logger, const std::string& params_json_path) {
                 continue;
             }
             for (int i = 0; i < 8; i++) {
-                if (ch == keys[i] && !held[midis[i]]) {
+                if (ch == keys[i]) {
                     engine.noteOn((uint8_t)midis[i], 80);
-                    held[midis[i]] = true;
+                    ma_sleep(300);
+                    engine.noteOff((uint8_t)midis[i]);
                 }
             }
         }
-        // Check for key release is not straightforward with _getch;
-        // use note-off after fixed duration via a simple approach:
-        // For a proper implementation, use GetAsyncKeyState or a MIDI lib.
         ma_sleep(1);
     }
 #else
-    // POSIX: non-blocking stdin with termios
     #include <termios.h>
     #include <unistd.h>
     #include <fcntl.h>
@@ -244,7 +257,6 @@ int runResonator(Logger& logger, const std::string& params_json_path) {
     newt.c_lflag &= ~(ICANON | ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &newt);
     fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
-
     while (true) {
         char ch;
         if (read(STDIN_FILENO, &ch, 1) == 1) {
@@ -252,22 +264,24 @@ int runResonator(Logger& logger, const std::string& params_json_path) {
             if (ch == 'z') {
                 sustain = !sustain;
                 engine.sustainPedal(sustain ? 127 : 0);
+                std::printf("Sustain: %s\n", sustain ? "ON" : "OFF");
             }
             for (int i = 0; i < 8; i++) {
                 if (ch == keys[i]) {
                     engine.noteOn((uint8_t)midis[i], 80);
-                    ma_sleep(200);   // hold for 200 ms, then release
+                    ma_sleep(300);
                     engine.noteOff((uint8_t)midis[i]);
                 }
             }
         }
         ma_sleep(1);
     }
-
     tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
 #endif
 
+    midi.close();
     engine.stop();
-    logger.log("runResonator", 0, "=== IthacaCoreResonator STOPPED ===");
+    logger.log("runResonator", LogSeverity::Info,
+               "=== IthacaCoreResonator STOPPED ===");
     return 0;
 }

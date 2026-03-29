@@ -57,11 +57,15 @@ public:
     void noteOff(uint8_t midi);
     void sustainPedal(uint8_t val);     // val >= 64 = down
 
-    // ── Master DSP controls ───────────────────────────────────────────────────
-    void setLimiterThreshold(uint8_t midi_val);
-    void setLimiterRelease  (uint8_t midi_val);
-    void setBBEDefinition   (uint8_t midi_val);
-    void setBBEBassBoost    (uint8_t midi_val);
+    // ── Master DSP + mix controls (forwarded to VoiceManager) ────────────────
+    void setLimiterThreshold   (uint8_t v);
+    void setLimiterRelease     (uint8_t v);
+    void setBBEDefinition      (uint8_t v);
+    void setBBEBassBoost       (uint8_t v);
+    void setAllVoicesMasterGain(uint8_t v);
+    void setAllVoicesPan       (uint8_t v);
+    void setAllVoicesPanSpeed  (uint8_t v);
+    void setAllVoicesPanDepth  (uint8_t v);
 
     // ── Stats ─────────────────────────────────────────────────────────────────
     int  activeVoices() const;
@@ -90,4 +94,6 @@ private:
 };
 
 // ── Convenience: full startup + interactive loop (like runSampler) ────────────
-int runResonator(Logger& logger, const std::string& params_json_path);
+// midi_port: index into MidiInput::listPorts() (-1 = auto/first)
+int runResonator(Logger& logger, const std::string& params_json_path,
+                 int midi_port = 0);

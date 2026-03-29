@@ -12,7 +12,9 @@ set(SYNTH_SOURCES
     synth/resonator_voice.cpp
     synth/voice_manager.cpp
     synth/biquad_eq.cpp
-    synth/resonator_engine.cpp   # RT audio callback + MIDI queue
+    synth/resonator_engine.cpp
+    synth/midi_input.cpp
+    third_party/RtMidi.cpp
 )
 
 # core_logger is header-only stub (no .cpp needed until IthacaCore DSP is copied)
@@ -36,19 +38,35 @@ target_include_directories(IthacaCoreResonator PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party   # nlohmann/json.hpp, miniaudio.h
 )
 
-# ── miniaudio platform dependencies ──────────────────────────────────────────
+# ── Platform dependencies (miniaudio + RtMidi) ────────────────────────────────
 if (WIN32)
+    target_compile_definitions(IthacaCoreResonator PRIVATE __WINDOWS_MM__)
     target_link_libraries(IthacaCoreResonator PRIVATE ole32 winmm)
+
 elseif (APPLE)
+    target_compile_definitions(IthacaCoreResonator PRIVATE __MACOSX_CORE__)
     target_link_libraries(IthacaCoreResonator PRIVATE
-        "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
+        "-framework CoreAudio"
+        "-framework AudioToolbox"
+        "-framework CoreFoundation"
+        "-framework CoreMIDI")
+
 else()  # Linux
-    target_link_libraries(IthacaCoreResonator PRIVATE pthread m dl)
-    find_package(ALSA QUIET)
-    if (ALSA_FOUND)
-        target_link_libraries(IthacaCoreResonator PRIVATE ${ALSA_LIBRARIES})
-        target_compile_definitions(IthacaCoreResonator PRIVATE MA_ENABLE_ALSA)
+    # MIDI backend: prefer JACK, fall back to ALSA
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(JACK QUIET jack)
     endif()
+
+    if (JACK_FOUND)
+        target_compile_definitions(IthacaCoreResonator PRIVATE __UNIX_JACK__)
+        target_link_libraries(IthacaCoreResonator PRIVATE ${JACK_LIBRARIES})
+    else()
+        target_compile_definitions(IthacaCoreResonator PRIVATE __LINUX_ALSA__)
+        target_link_libraries(IthacaCoreResonator PRIVATE asound)
+    endif()
+
+    target_link_libraries(IthacaCoreResonator PRIVATE pthread m dl)
 endif()
 
 # ── SIMD ─────────────────────────────────────────────────────────────────────
