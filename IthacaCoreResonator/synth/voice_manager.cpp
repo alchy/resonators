@@ -61,7 +61,7 @@ void ResonatorVoiceManager::prepareToPlay(int max_block_size) {
     max_block_size_ = max_block_size;
     tmp_l_.assign(max_block_size, 0.f);
     tmp_r_.assign(max_block_size, 0.f);
-    dsp_chain_.prepare((int)sample_rate_, max_block_size);
+    dsp_chain_.prepare(sample_rate_, max_block_size);
 }
 
 // ── MIDI note control ─────────────────────────────────────────────────────────
@@ -282,18 +282,28 @@ void ResonatorVoiceManager::logSystemStatistics(Logger& logger) {
 
 void ResonatorVoiceManager::setLimiterThresholdMIDI(uint8_t v) noexcept {
     limiter_threshold_midi_ = v;
-    // dsp_chain_.getEffect<Limiter>(0)->setThresholdMIDI(v);  // wire when DSP copied
+    dsp_chain_.setLimiterThreshold(v);
 }
 void ResonatorVoiceManager::setLimiterReleaseMIDI(uint8_t v) noexcept {
     limiter_release_midi_ = v;
+    dsp_chain_.setLimiterRelease(v);
 }
 void ResonatorVoiceManager::setLimiterEnabledMIDI(uint8_t v) noexcept {
     limiter_enabled_midi_ = v;
+    dsp_chain_.setLimiterEnabled(v);
 }
 uint8_t ResonatorVoiceManager::getLimiterThresholdMIDI()     const noexcept { return limiter_threshold_midi_; }
 uint8_t ResonatorVoiceManager::getLimiterReleaseMIDI()       const noexcept { return limiter_release_midi_;   }
 uint8_t ResonatorVoiceManager::getLimiterEnabledMIDI()       const noexcept { return limiter_enabled_midi_;   }
-uint8_t ResonatorVoiceManager::getLimiterGainReductionMIDI() const noexcept { return 127; /* stub */ }
+uint8_t ResonatorVoiceManager::getLimiterGainReductionMIDI() const noexcept {
+    return dsp_chain_.getLimiterGainReduction();
+}
 
-void ResonatorVoiceManager::setBBEDefinitionMIDI(uint8_t v) noexcept { bbe_definition_midi_ = v; }
-void ResonatorVoiceManager::setBBEBassBoostMIDI (uint8_t v) noexcept { bbe_bass_boost_midi_  = v; }
+void ResonatorVoiceManager::setBBEDefinitionMIDI(uint8_t v) noexcept {
+    bbe_definition_midi_ = v;
+    dsp_chain_.setBBEDefinition(v);
+}
+void ResonatorVoiceManager::setBBEBassBoostMIDI(uint8_t v) noexcept {
+    bbe_bass_boost_midi_ = v;
+    dsp_chain_.setBBEBassBoost(v);
+}

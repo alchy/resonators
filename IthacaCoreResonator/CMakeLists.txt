@@ -40,11 +40,15 @@ set(SYNTH_SOURCES
     third_party/RtMidi.cpp
 )
 
-# core_logger is header-only stub (no .cpp needed until IthacaCore DSP is copied)
+# core_logger is header-only (no .cpp needed)
 set(LOGGER_SOURCES)
 
-# DSP chain is a header-only stub until IthacaCore dsp/ files are copied
-set(DSP_SOURCES)
+# DSP chain: limiter + BBE + chain
+set(DSP_SOURCES
+    dsp/dsp_chain.cpp
+    dsp/limiter/limiter.cpp
+    dsp/bbe/bbe.cpp
+)
 
 add_executable(IthacaCoreResonator
     main.cpp
@@ -136,6 +140,7 @@ add_executable(IthacaCoreResonatorGUI
     gui_main.cpp
     gui/resonator_gui.cpp
     ${SYNTH_SOURCES}
+    ${DSP_SOURCES}
     ${IMGUI_SOURCES}
 )
 

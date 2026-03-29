@@ -21,6 +21,7 @@
 
 #include "voice_manager.h"
 #include "../sampler/core_logger.h"
+#include "../dsp/dsp_chain.h"
 #include <string>
 #include <atomic>
 #include <cstdint>
@@ -71,6 +72,9 @@ public:
     int  activeVoices() const;
     int  sampleRate()   const { return sample_rate_; }
     int  blockSize()    const { return block_size_; }
+
+    // ── DSP chain access (for GUI metering / state readback) ──────────────────
+    DspChain* getDspChain() { return vm_.getDspChain(); }
 
 private:
     // Called by miniaudio audio thread — must be RT-safe (no alloc, no lock)

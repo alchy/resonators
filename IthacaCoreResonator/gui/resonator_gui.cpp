@@ -12,6 +12,7 @@
 #include "resonator_gui.h"
 #include "../synth/midi_input.h"
 #include "../synth/note_params.h"
+#include "../dsp/dsp_chain.h"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -71,7 +72,16 @@ struct GuiState {
     uint8_t pan          = 64;   // 64 = centre
     uint8_t lfo_speed    = 0;
     uint8_t lfo_depth    = 0;
-    uint8_t limiter_thr  = 127;
+
+    // Limiter
+    uint8_t limiter_thr     = 100;  // MIDI 100 ≈ -8 dB
+    uint8_t limiter_rel     = 50;
+    bool    limiter_enabled = false;
+
+    // BBE
+    uint8_t bbe_def     = 0;
+    uint8_t bbe_bass    = 0;
+    bool    bbe_enabled = false;
 
     // Stats (polled each frame)
     int     active_voices = 0;
@@ -357,6 +367,97 @@ int runResonatorGui(ResonatorEngine& engine, Logger& logger,
                 gs.lfo_depth = (uint8_t)v;
                 engine.setAllVoicesPanDepth(gs.lfo_depth);
             }
+        }
+
+        // ── DSP chain ─────────────────────────────────────────────────────────
+        ImGui::Separator();
+        DspChain* dsp = engine.getDspChain();
+
+        // Limiter row
+        ImGui::TextColored({0.9f,0.7f,0.2f,1.f}, "LIMITER");
+        ImGui::SameLine(0, 6.f);
+        {
+            bool ena = gs.limiter_enabled;
+            if (ImGui::Checkbox("##limon", &ena)) {
+                gs.limiter_enabled = ena;
+                if (dsp) dsp->setLimiterEnabled(ena ? 127 : 0);
+            }
+        }
+        ImGui::SameLine(0, 12.f);
+        {
+            int v = gs.limiter_thr;
+            ImGui::SetNextItemWidth(col_w - 20.f);
+            if (ImGui::SliderInt("Threshold##lim", &v, 0, 127)) {
+                gs.limiter_thr = (uint8_t)v;
+                engine.setLimiterThreshold(gs.limiter_thr);
+            }
+            if (ImGui::IsItemHovered()) {
+                float db = -40.f + 40.f * (gs.limiter_thr / 127.f);
+                ImGui::SetTooltip("%.1f dB", db);
+            }
+        }
+        ImGui::SameLine(0, 12.f);
+        {
+            int v = gs.limiter_rel;
+            ImGui::SetNextItemWidth(col_w - 20.f);
+            if (ImGui::SliderInt("Release##lim", &v, 0, 127)) {
+                gs.limiter_rel = (uint8_t)v;
+                engine.setLimiterRelease(gs.limiter_rel);
+            }
+            if (ImGui::IsItemHovered()) {
+                float ms = 10.f + 1990.f * (gs.limiter_rel / 127.f);
+                ImGui::SetTooltip("%.0f ms", ms);
+            }
+        }
+        // GR meter
+        if (dsp && gs.limiter_enabled) {
+            ImGui::SameLine(0, 12.f);
+            float gr = -dsp->limiter().gainReductionDb() / 40.f;
+            gr = std::max(0.f, std::min(gr, 1.f));
+            char ovl[16]; snprintf(ovl, sizeof(ovl), "%.1f dB",
+                dsp->limiter().gainReductionDb());
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, IM_COL32(220,60,60,200));
+            ImGui::ProgressBar(gr, {80.f, 14.f}, ovl);
+            ImGui::PopStyleColor();
+        }
+
+        // BBE row
+        ImGui::SameLine(0, 24.f);
+        ImGui::TextColored({0.4f,0.85f,1.f,1.f}, "BBE");
+        ImGui::SameLine(0, 6.f);
+        {
+            bool ena = gs.bbe_enabled;
+            if (ImGui::Checkbox("##bbeon", &ena)) {
+                gs.bbe_enabled = ena;
+                if (dsp) {
+                    dsp->setBBEDefinition(ena ? gs.bbe_def : 0);
+                    dsp->setBBEBassBoost (ena ? gs.bbe_bass : 0);
+                }
+            }
+        }
+        ImGui::SameLine(0, 12.f);
+        {
+            int v = gs.bbe_def;
+            ImGui::SetNextItemWidth(col_w - 20.f);
+            if (ImGui::SliderInt("Definition##bbe", &v, 0, 127)) {
+                gs.bbe_def = (uint8_t)v;
+                gs.bbe_enabled = (v > 0 || gs.bbe_bass > 0);
+                engine.setBBEDefinition(gs.bbe_def);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("5 kHz shelf: +%.1f dB", 12.f*(gs.bbe_def/127.f));
+        }
+        ImGui::SameLine(0, 12.f);
+        {
+            int v = gs.bbe_bass;
+            ImGui::SetNextItemWidth(col_w - 20.f);
+            if (ImGui::SliderInt("Bass Boost##bbe", &v, 0, 127)) {
+                gs.bbe_bass = (uint8_t)v;
+                gs.bbe_enabled = (v > 0 || gs.bbe_def > 0);
+                engine.setBBEBassBoost(gs.bbe_bass);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("180 Hz shelf: +%.1f dB", 10.f*(gs.bbe_bass/127.f));
         }
 
         // ── Sustain button (mouse/keyboard fallback) ──────────────────────────
